@@ -1,546 +1,542 @@
-# API Mapping Cheatsheet: VSCode/JetBrains → Neovim
+# API Integration Guide: HTTP Protocol → Neovim
 
-This document maps common patterns from VSCode and JetBrains plugins to their Neovim equivalents.
+This document shows how to integrate the Continue CLI's HTTP API with Neovim.
 
-## VSCode → Neovim Mappings
+## Overview
 
-### Activation & Lifecycle
+**Architecture**: HTTP polling client talking to `cn serve` backend
 
-| VSCode | Neovim |
-|--------|--------|
-| `activate()` | `require('plugin').setup()` |
-| `deactivate()` | No explicit deactivation (optional cleanup) |
-| `activationEvents: ["onLanguage:python"]` | `vim.api.nvim_create_autocmd('FileType', { pattern = 'python' })` |
-| `context.subscriptions.push(disposable)` | Store references, no auto-cleanup |
+**Key Responsibilities**:
+- **cn serve**: All AI logic, agent execution, tool calls
+- **Neovim plugin**: Process management, HTTP client, UI rendering
 
-### Commands
+**Protocol**: REST API on `localhost:8000` (default)
 
-```typescript
-// VSCode
-vscode.commands.registerCommand('extension.myCommand', () => {
-  vscode.window.showInformationMessage('Hello');
-});
-```
+---
 
-```lua
--- Neovim
-vim.api.nvim_create_user_command('MyCommand', function()
-  vim.notify('Hello', vim.log.levels.INFO)
-end, { desc = 'My command description' })
-```
+## HTTP Endpoints → Neovim Implementation
 
-### Configuration
+### GET /state (Polling)
 
-```typescript
-// VSCode - package.json
-"contributes": {
-  "configuration": {
-    "properties": {
-      "myExt.enabled": {
-        "type": "boolean",
-        "default": true
-      }
+**Purpose**: Get current agent state
+**Frequency**: Every 500ms
+**Returns**: Chat history, processing status, permissions
+
+**Response**:
+```json
+{
+  "chatHistory": [
+    {
+      "role": "user" | "assistant" | "system",
+      "content": "string",
+      "isStreaming": boolean,
+      "messageType": "tool-start" | "tool-result" | "tool-error" | "system",
+      "toolName": "string",
+      "toolResult": "string"
     }
-  }
+  ],
+  "isProcessing": boolean,
+  "messageQueueLength": number,
+  "pendingPermission": {
+    "requestId": "string",
+    "toolName": "string",
+    "args": {}
+  } | null
 }
-
-// VSCode - reading config
-const config = vscode.workspace.getConfiguration('myExt');
-const enabled = config.get('enabled', true);
-
-// VSCode - watching config changes
-vscode.workspace.onDidChangeConfiguration(e => {
-  if (e.affectsConfiguration('myExt.enabled')) {
-    // reload
-  }
-});
 ```
 
+**Neovim Implementation**:
 ```lua
--- Neovim - setup pattern
+-- lua/continue/client.lua
 local M = {}
-M.config = {
-  enabled = true,
+local state = {}
+
+-- Start polling timer
+function M.start_polling(port, callback)
+  local timer = vim.loop.new_timer()
+
+  timer:start(0, 500, vim.schedule_wrap(function()
+    local url = string.format('http://localhost:%d/state', port)
+
+    M.http_get(url, function(response)
+      if response then
+        local ok, parsed = pcall(vim.json.decode, response.body)
+        if ok then
+          callback(parsed)
+        else
+          vim.notify('Failed to parse /state response', vim.log.levels.ERROR)
+        end
+      end
+    end)
+  end))
+
+  return timer
+end
+
+-- Stop polling
+function M.stop_polling(timer)
+  if timer then
+    timer:stop()
+    timer:close()
+  end
+end
+```
+
+**UI Update Pattern**:
+```lua
+-- lua/continue/ui/chat.lua
+local M = {}
+local last_state = nil
+
+function M.update_from_state(new_state)
+  -- Diff chatHistory to find new messages
+  if last_state then
+    local old_count = #last_state.chatHistory
+    local new_count = #new_state.chatHistory
+
+    if new_count > old_count then
+      -- Append new messages
+      for i = old_count + 1, new_count do
+        M.append_message(new_state.chatHistory[i])
+      end
+    elseif new_count < old_count then
+      -- Full refresh (message removed/interrupted)
+      M.render_all(new_state.chatHistory)
+    else
+      -- Check last message for streaming updates
+      local last_msg = new_state.chatHistory[new_count]
+      if last_msg and last_msg.isStreaming then
+        M.update_streaming_message(last_msg)
+      end
+    end
+  else
+    -- First render
+    M.render_all(new_state.chatHistory)
+  end
+
+  -- Update status line
+  M.update_status(new_state.isProcessing, new_state.messageQueueLength)
+
+  -- Handle permission requests
+  if new_state.pendingPermission then
+    M.show_permission_prompt(new_state.pendingPermission)
+  end
+
+  last_state = new_state
+end
+```
+
+---
+
+### POST /message (Send User Input)
+
+**Purpose**: Send message to agent
+**Triggers**: User types in chat buffer, command invocation
+**Returns**: Queue position
+
+**Request**:
+```json
+{
+  "message": "string"
 }
-
-function M.setup(opts)
-  M.config = vim.tbl_deep_extend('force', M.config, opts or {})
-end
-
--- Neovim - reading config
-local enabled = require('my-plugin').config.enabled
-
--- Neovim - no built-in config watching
--- Users manually call setup() again or restart
 ```
 
-### User Input
-
-```typescript
-// VSCode - input box
-const result = await vscode.window.showInputBox({
-  prompt: 'Enter value',
-  value: 'default',
-});
-
-// VSCode - quick pick
-const choice = await vscode.window.showQuickPick(
-  ['Option 1', 'Option 2'],
-  { placeHolder: 'Select one' }
-);
+**Response**:
+```json
+{
+  "queued": true,
+  "position": number
+}
 ```
 
+**Neovim Implementation**:
 ```lua
--- Neovim - input
-vim.ui.input({
-  prompt = 'Enter value: ',
-  default = 'default',
-}, function(result)
-  if result then
-    -- handle input
-  end
-end)
+-- lua/continue/client.lua
+function M.send_message(port, message, callback)
+  local url = string.format('http://localhost:%d/message', port)
+  local body = vim.json.encode({ message = message })
 
--- Neovim - selection
-vim.ui.select({'Option 1', 'Option 2'}, {
-  prompt = 'Select one:',
-}, function(choice, idx)
-  if choice then
-    -- handle choice
-  end
-end)
-```
-
-### Text Editing
-
-```typescript
-// VSCode - edit current document
-const editor = vscode.window.activeTextEditor;
-editor.edit(editBuilder => {
-  const position = new vscode.Position(0, 0);
-  editBuilder.insert(position, 'text');
-  
-  const range = new vscode.Range(
-    new vscode.Position(0, 0),
-    new vscode.Position(0, 10)
-  );
-  editBuilder.replace(range, 'new text');
-});
-```
-
-```lua
--- Neovim - edit current buffer
-local bufnr = vim.api.nvim_get_current_buf()
-
--- Insert at line 1, column 0 (0-indexed)
-vim.api.nvim_buf_set_text(bufnr, 0, 0, 0, 0, {'text'})
-
--- Replace range (line 0, col 0 to line 0, col 10)
-vim.api.nvim_buf_set_text(bufnr, 0, 0, 0, 10, {'new text'})
-
--- Or manipulate full lines
-local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
-lines[1] = 'modified line'
-vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
-```
-
-### File Operations
-
-```typescript
-// VSCode - read file
-const uri = vscode.Uri.file('/path/to/file');
-const bytes = await vscode.workspace.fs.readFile(uri);
-const content = new TextDecoder().decode(bytes);
-
-// VSCode - write file
-const bytes = new TextEncoder().encode('content');
-await vscode.workspace.fs.writeFile(uri, bytes);
-```
-
-```lua
--- Neovim - read file (sync)
-local file = io.open('/path/to/file', 'r')
-if file then
-  local content = file:read('*a')
-  file:close()
+  M.http_post(url, body, function(response)
+    if response and response.status == 200 then
+      local ok, data = pcall(vim.json.decode, response.body)
+      if ok then
+        callback(nil, data)
+      else
+        callback('Invalid response')
+      end
+    else
+      callback(response and response.status or 'Request failed')
+    end
+  end)
 end
+```
 
--- Neovim - write file (sync)
-local file = io.open('/path/to/file', 'w')
-if file then
-  file:write('content')
-  file:close()
-end
+**Command Integration**:
+```lua
+-- lua/continue/commands.lua
+vim.api.nvim_create_user_command('Continue', function(opts)
+  local message = opts.args
 
--- Neovim - async with vim.loop
-vim.loop.fs_open('/path/to/file', 'r', 438, function(err, fd)
-  if not err then
-    vim.loop.fs_fstat(fd, function(err, stat)
-      vim.loop.fs_read(fd, stat.size, 0, function(err, data)
-        vim.loop.fs_close(fd)
-        vim.schedule(function()
-          -- use data in main thread
-        end)
-      end)
+  if message == '' then
+    -- Open chat UI
+    require('continue.ui.chat').open()
+  else
+    -- Send message directly
+    require('continue.client').send_message(8000, message, function(err, response)
+      if err then
+        vim.notify('Failed to send message: ' .. err, vim.log.levels.ERROR)
+      else
+        vim.notify('Message queued at position ' .. response.position, vim.log.levels.INFO)
+      end
     end)
   end
-end)
+end, {
+  nargs = '*',
+  desc = 'Continue AI assistant',
+})
 ```
 
-### Diagnostics
-
-```typescript
-// VSCode - create diagnostic collection
-const diagnostics = vscode.languages.createDiagnosticCollection('myExt');
-
-// VSCode - set diagnostics
-diagnostics.set(uri, [
-  new vscode.Diagnostic(
-    new vscode.Range(0, 0, 0, 10),
-    'Error message',
-    vscode.DiagnosticSeverity.Error
-  ),
-]);
-
-// VSCode - clear diagnostics
-diagnostics.clear();
-```
-
+**Chat Buffer Integration**:
 ```lua
--- Neovim - create namespace
-local ns = vim.api.nvim_create_namespace('my-plugin')
+-- lua/continue/ui/chat.lua
+function M.setup_keymaps(bufnr)
+  -- Submit message on <CR> in insert mode
+  vim.keymap.set('i', '<CR>', function()
+    local line = vim.api.nvim_get_current_line()
+    if line ~= '' then
+      require('continue.client').send_message(8000, line, function(err)
+        if not err then
+          -- Clear input line
+          vim.api.nvim_set_current_line('')
+        end
+      end)
+    end
+  end, { buffer = bufnr })
 
--- Neovim - set diagnostics
-vim.diagnostic.set(ns, bufnr, {
-  {
-    lnum = 0,  -- 0-indexed line
-    col = 0,   -- 0-indexed column
-    end_lnum = 0,
-    end_col = 10,
-    message = 'Error message',
-    severity = vim.diagnostic.severity.ERROR,
-    source = 'my-plugin',
-  },
-})
-
--- Neovim - clear diagnostics
-vim.diagnostic.reset(ns, bufnr)
-```
-
-### Event Handlers
-
-```typescript
-// VSCode - document change
-vscode.workspace.onDidChangeTextDocument(event => {
-  console.log('Document changed:', event.document.uri);
-});
-
-// VSCode - document save
-vscode.workspace.onDidSaveTextDocument(document => {
-  console.log('Document saved:', document.uri);
-});
-
-// VSCode - window focus
-vscode.window.onDidChangeActiveTextEditor(editor => {
-  if (editor) {
-    console.log('Active editor changed');
-  }
-});
-```
-
-```lua
--- Neovim - document change
-vim.api.nvim_create_autocmd('TextChanged', {
-  callback = function()
-    print('Document changed')
-  end,
-})
-
--- Neovim - document save
-vim.api.nvim_create_autocmd('BufWritePost', {
-  callback = function(args)
-    print('Document saved:', args.file)
-  end,
-})
-
--- Neovim - buffer focus
-vim.api.nvim_create_autocmd('BufEnter', {
-  callback = function(args)
-    print('Buffer entered:', args.buf)
-  end,
-})
+  -- Interrupt on <Esc>
+  vim.keymap.set('n', '<Esc>', function()
+    require('continue.client').pause(8000)
+  end, { buffer = bufnr })
+end
 ```
 
 ---
 
-## JetBrains → Neovim Mappings
+### POST /permission (Tool Approval)
 
-### Actions
+**Purpose**: Approve/reject tool execution
+**Triggers**: User responds to permission prompt
 
-```kotlin
-// JetBrains - define action
-class MyAction : AnAction("My Action") {
-  override fun actionPerformed(e: AnActionEvent) {
-    val project = e.project ?: return
-    Messages.showMessageDialog(
-      project,
-      "Hello!",
-      "Title",
-      Messages.getInformationIcon()
-    )
-  }
+**Request**:
+```json
+{
+  "requestId": "string",
+  "approved": boolean
 }
 ```
 
+**Neovim Implementation**:
 ```lua
--- Neovim - equivalent
-vim.api.nvim_create_user_command('MyAction', function()
-  vim.notify('Hello!', vim.log.levels.INFO)
-end, { desc = 'My Action' })
-
--- With keybinding
-vim.keymap.set('n', '<leader>ma', ':MyAction<CR>', { desc = 'My Action' })
-```
-
-### PSI / Syntax Trees
-
-```kotlin
-// JetBrains - PSI traversal
-ReadAction.run<RuntimeException> {
-  val psiFile = PsiManager.getInstance(project).findFile(virtualFile)
-  psiFile?.accept(object : PsiRecursiveElementVisitor() {
-    override fun visitElement(element: PsiElement) {
-      if (element is PsiMethod) {
-        println("Found method: ${element.name}")
-      }
-      super.visitElement(element)
-    }
+-- lua/continue/client.lua
+function M.send_permission(port, request_id, approved, callback)
+  local url = string.format('http://localhost:%d/permission', port)
+  local body = vim.json.encode({
+    requestId = request_id,
+    approved = approved
   })
-}
-```
 
-```lua
--- Neovim - Tree-sitter equivalent
-local parser = vim.treesitter.get_parser(bufnr, 'java')
-local tree = parser:parse()[1]
-local root = tree:root()
-
-local query = vim.treesitter.query.parse('java', [[
-  (method_declaration
-    name: (identifier) @method.name)
-]])
-
-for id, node in query:iter_captures(root, bufnr, 0, -1) do
-  local text = vim.treesitter.get_node_text(node, bufnr)
-  print('Found method:', text)
+  M.http_post(url, body, callback)
 end
 ```
 
-### Notifications
-
-```kotlin
-// JetBrains - notification
-Notifications.Bus.notify(
-  Notification(
-    "NotificationGroup",
-    "Title",
-    "Content",
-    NotificationType.INFORMATION
-  ),
-  project
-)
-```
-
+**Permission Prompt**:
 ```lua
--- Neovim - notification
-vim.notify('Content', vim.log.levels.INFO)
-
--- Or with title (requires plugin like nvim-notify)
-require('notify')('Content', 'info', { title = 'Title' })
-```
-
-### Settings/Configuration
-
-```kotlin
-// JetBrains - persistent settings
-@State(
-  name = "MySettings",
-  storages = [Storage("MySettings.xml")]
-)
-class MySettings : PersistentStateComponent<MySettings.State> {
-  data class State(
-    var enabled: Boolean = true,
-    var value: String = "default"
+-- lua/continue/ui/chat.lua
+function M.show_permission_prompt(permission)
+  local prompt = string.format(
+    'Tool "%s" wants to execute.\nArgs: %s\nApprove?',
+    permission.toolName,
+    vim.inspect(permission.args)
   )
-  
-  private var state = State()
-  
-  override fun getState() = state
-  override fun loadState(state: State) {
-    this.state = state
-  }
-}
 
-// Usage
-val settings = ServiceManager.getService(MySettings::class.java)
-settings.state.enabled = false
-```
-
-```lua
--- Neovim - config pattern (no persistence by default)
-local M = {}
-
-M.config = {
-  enabled = true,
-  value = 'default',
-}
-
-function M.setup(opts)
-  M.config = vim.tbl_deep_extend('force', M.config, opts or {})
-  
-  -- Optional: persist to file
-  local config_path = vim.fn.stdpath('data') .. '/my-plugin.json'
-  local file = io.open(config_path, 'w')
-  if file then
-    file:write(vim.json.encode(M.config))
-    file:close()
-  end
-end
-
--- Optional: load persisted config
-local function load_config()
-  local config_path = vim.fn.stdpath('data') .. '/my-plugin.json'
-  local file = io.open(config_path, 'r')
-  if file then
-    local content = file:read('*a')
-    file:close()
-    return vim.json.decode(content)
-  end
-  return {}
-end
-
-return M
-```
-
-### Virtual File System
-
-```kotlin
-// JetBrains - VFS operations
-val vfs = VirtualFileManager.getInstance()
-val file = vfs.findFileByUrl("file:///path/to/file")
-
-if (file != null && file.isValid) {
-  val content = String(file.contentsToByteArray())
-  println(content)
-}
-```
-
-```lua
--- Neovim - file operations
-local path = '/path/to/file'
-
--- Check if file exists
-local stat = vim.loop.fs_stat(path)
-if stat and stat.type == 'file' then
-  local file = io.open(path, 'r')
-  if file then
-    local content = file:read('*a')
-    file:close()
-    print(content)
-  end
+  vim.ui.select({'Yes', 'No'}, {
+    prompt = prompt,
+  }, function(choice)
+    local approved = choice == 'Yes'
+    require('continue.client').send_permission(
+      8000,
+      permission.requestId,
+      approved,
+      function(err)
+        if err then
+          vim.notify('Failed to send permission response', vim.log.levels.ERROR)
+        end
+      end
+    )
+  end)
 end
 ```
 
 ---
 
-## Common Pitfalls When Porting
+### POST /pause (Interrupt Execution)
 
-### 1. Zero-based vs One-based Indexing
+**Purpose**: Stop current agent execution
+**Triggers**: User presses Escape or `:ContinuePause`
 
-```typescript
-// VSCode/JetBrains (0-indexed)
-const line = 0;  // first line
-const char = 0;  // first character
-```
-
+**Neovim Implementation**:
 ```lua
--- Neovim buffers (0-indexed)
-local line = 0  -- first line
-
--- Neovim Lua tables (1-indexed!)
-local lines = {'first', 'second', 'third'}
-local first = lines[1]  -- NOT lines[0]
-
--- Tree-sitter (0-indexed)
-local range = node:range()  -- {0, 0, 0, 10}
+-- lua/continue/client.lua
+function M.pause(port, callback)
+  local url = string.format('http://localhost:%d/pause', port)
+  M.http_post(url, '{}', function(response)
+    if response and response.status == 200 then
+      vim.notify('Agent paused', vim.log.levels.INFO)
+      if callback then callback(nil) end
+    else
+      if callback then callback('Failed to pause') end
+    end
+  end)
+end
 ```
 
-### 2. Async Patterns
+**Command**:
+```lua
+vim.api.nvim_create_user_command('ContinuePause', function()
+  require('continue.client').pause(8000)
+end, { desc = 'Pause Continue agent execution' })
+```
 
-```typescript
-// VSCode - async/await
-async function doThing() {
-  const result = await someAsyncOp();
-  return result;
+---
+
+### GET /diff (Git Integration)
+
+**Purpose**: Get git diff from working tree
+**Use case**: Show changes made by agent
+
+**Response**:
+```json
+{
+  "diff": "string"
 }
 ```
 
+**Neovim Implementation**:
 ```lua
--- Neovim - callbacks (without plenary)
-local function do_thing(callback)
-  some_async_op(function(result)
-    callback(result)
+-- lua/continue/commands.lua
+vim.api.nvim_create_user_command('ContinueDiff', function()
+  require('continue.client').get_diff(8000, function(err, diff)
+    if err then
+      vim.notify('Failed to get diff: ' .. err, vim.log.levels.ERROR)
+      return
+    end
+
+    -- Show in split
+    local bufnr = vim.api.nvim_create_buf(false, true)
+    vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, vim.split(diff, '\n'))
+    vim.api.nvim_buf_set_option(bufnr, 'filetype', 'diff')
+
+    vim.cmd('split')
+    vim.api.nvim_win_set_buf(0, bufnr)
+  end)
+end, { desc = 'Show git diff from Continue agent' })
+```
+
+---
+
+### POST /exit (Graceful Shutdown)
+
+**Purpose**: Stop cn serve
+**Triggers**: `:ContinueStop`, `VimLeavePre`
+
+**Neovim Implementation**:
+```lua
+-- lua/continue/process.lua
+function M.stop()
+  if not state.running then return end
+
+  -- Try graceful shutdown
+  require('continue.client').exit(state.port, function(err)
+    if err then
+      vim.notify('Graceful shutdown failed, forcing...', vim.log.levels.WARN)
+      -- Force kill after 2 seconds
+      vim.defer_fn(function()
+        if state.job_id then
+          vim.fn.jobstop(state.job_id)
+        end
+      end, 2000)
+    end
   end)
 end
 
--- Or with plenary.async
-local async = require('plenary.async')
-local do_thing = async.wrap(function(callback)
-  some_async_op(callback)
-end, 1)
-
-async.run(function()
-  local result = do_thing()
-  -- use result
-end)
+-- Auto-cleanup
+vim.api.nvim_create_autocmd('VimLeavePre', {
+  callback = function()
+    M.stop()
+  end,
+})
 ```
 
-### 3. Error Handling
+---
 
-```typescript
-// VSCode/JetBrains - exceptions
-try {
-  riskyOperation();
-} catch (error) {
-  console.error(error);
-}
-```
+## HTTP Client Implementation
+
+### Option 1: Using vim.loop (libuv)
+
+**Pros**: No external dependencies, async
+**Cons**: More code, manual HTTP parsing
 
 ```lua
--- Neovim - pcall
-local ok, result = pcall(risky_operation)
-if not ok then
-  vim.notify('Error: ' .. tostring(result), vim.log.levels.ERROR)
-  return
-end
--- use result
-```
-
-### 4. Module System
-
-```typescript
-// VSCode - ES modules
-import { foo } from './utils';
-export function bar() { }
-```
-
-```lua
--- Neovim - require/return
-local utils = require('plugin.utils')
+-- lua/continue/utils/http.lua
 local M = {}
 
-function M.bar()
-  utils.foo()
+function M.get(url, callback)
+  local parsed = M.parse_url(url)
+  local client = vim.loop.new_tcp()
+
+  client:connect(parsed.host, parsed.port, function(err)
+    if err then
+      callback(nil, err)
+      return
+    end
+
+    local request = string.format(
+      "GET %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n",
+      parsed.path,
+      parsed.host
+    )
+
+    client:write(request)
+
+    local response = ''
+    client:read_start(function(err, chunk)
+      if err then
+        callback(nil, err)
+        return
+      end
+
+      if chunk then
+        response = response .. chunk
+      else
+        -- Parse HTTP response
+        local body = response:match('\r\n\r\n(.*)$')
+        vim.schedule(function()
+          callback({ body = body, status = 200 })
+        end)
+        client:close()
+      end
+    end)
+  end)
+end
+
+function M.post(url, body, callback)
+  local parsed = M.parse_url(url)
+  local client = vim.loop.new_tcp()
+
+  client:connect(parsed.host, parsed.port, function(err)
+    if err then
+      callback(nil, err)
+      return
+    end
+
+    local request = string.format(
+      "POST %s HTTP/1.1\r\nHost: %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s",
+      parsed.path,
+      parsed.host,
+      #body,
+      body
+    )
+
+    client:write(request)
+
+    local response = ''
+    client:read_start(function(err, chunk)
+      if err then
+        callback(nil, err)
+        return
+      end
+
+      if chunk then
+        response = response .. chunk
+      else
+        local body = response:match('\r\n\r\n(.*)$')
+        vim.schedule(function()
+          callback({ body = body, status = 200 })
+        end)
+        client:close()
+      end
+    end)
+  end)
+end
+
+function M.parse_url(url)
+  local host, port, path = url:match('http://([^:]+):(%d+)(.*)')
+  if not host then
+    host, path = url:match('http://([^/]+)(.*)')
+    port = 80
+  end
+  return { host = host, port = tonumber(port), path = path == '' and '/' or path }
+end
+
+return M
+```
+
+### Option 2: Using curl (simpler)
+
+**Pros**: Simple, robust
+**Cons**: Blocks, requires curl installed
+
+```lua
+-- lua/continue/utils/http.lua
+local M = {}
+
+function M.get(url, callback)
+  local cmd = string.format('curl -s "%s"', url)
+
+  vim.fn.jobstart(cmd, {
+    stdout_buffered = true,
+    on_stdout = function(_, data)
+      if data then
+        local body = table.concat(data, '\n')
+        vim.schedule(function()
+          callback({ body = body, status = 200 })
+        end)
+      end
+    end,
+    on_exit = function(_, code)
+      if code ~= 0 then
+        vim.schedule(function()
+          callback(nil, 'curl failed with code ' .. code)
+        end)
+      end
+    end,
+  })
+end
+
+function M.post(url, body, callback)
+  local cmd = string.format('curl -s -X POST -H "Content-Type: application/json" -d %s "%s"',
+    vim.fn.shellescape(body),
+    url
+  )
+
+  vim.fn.jobstart(cmd, {
+    stdout_buffered = true,
+    on_stdout = function(_, data)
+      if data then
+        local body = table.concat(data, '\n')
+        vim.schedule(function()
+          callback({ body = body, status = 200 })
+        end)
+      end
+    end,
+    on_exit = function(_, code)
+      if code ~= 0 then
+        vim.schedule(function()
+          callback(nil, 'curl failed with code ' .. code)
+        end)
+      end
+    end,
+  })
 end
 
 return M
@@ -548,59 +544,169 @@ return M
 
 ---
 
-## Performance Considerations
+## JSON Handling
 
-### VSCode/JetBrains
-- Async by default, can offload to background threads
-- Rich UI rendering (WebViews, custom components)
+Neovim 0.10+ has built-in JSON support via `vim.json`:
 
-### Neovim
-- Single-threaded (use vim.loop for async I/O)
-- Minimal UI (creative use of buffers/windows)
-- Direct access to editor state (faster for text operations)
+```lua
+-- Encode
+local json_string = vim.json.encode({ message = 'Hello' })
 
-**Rules of thumb:**
-1. Use `vim.schedule()` to defer non-critical work
-2. Batch buffer operations when possible
-3. Cache expensive computations
-4. Avoid tight loops in Lua (drop to Vimscript if needed)
+-- Decode (with error handling)
+local ok, data = pcall(vim.json.decode, json_string)
+if ok then
+  print('Decoded:', data.message)
+else
+  vim.notify('Invalid JSON', vim.log.levels.ERROR)
+end
+```
+
+---
+
+## Process Management Patterns
+
+### Spawning cn serve
+
+```lua
+-- lua/continue/process.lua
+local M = {}
+local state = {
+  job_id = nil,
+  port = 8000,
+  running = false,
+}
+
+function M.start(opts)
+  opts = opts or {}
+  local port = opts.port or 8000
+  local timeout = opts.timeout or 300
+
+  local cmd = {
+    'cn',
+    'serve',
+    '--port', tostring(port),
+    '--timeout', tostring(timeout),
+  }
+
+  if opts.config then
+    vim.list_extend(cmd, { '--config', opts.config })
+  end
+
+  state.job_id = vim.fn.jobstart(cmd, {
+    on_stdout = function(_, data)
+      for _, line in ipairs(data) do
+        if line ~= '' then
+          vim.notify('[cn serve] ' .. line, vim.log.levels.INFO)
+        end
+      end
+    end,
+    on_stderr = function(_, data)
+      for _, line in ipairs(data) do
+        if line ~= '' then
+          vim.notify('[cn serve ERROR] ' .. line, vim.log.levels.ERROR)
+        end
+      end
+    end,
+    on_exit = function(_, code)
+      state.running = false
+      state.job_id = nil
+      if code ~= 0 then
+        vim.notify('cn serve exited with code ' .. code, vim.log.levels.ERROR)
+      end
+    end,
+  })
+
+  if state.job_id <= 0 then
+    vim.notify('Failed to start cn serve', vim.log.levels.ERROR)
+    return false
+  end
+
+  state.port = port
+  state.running = true
+
+  return true
+end
+
+return M
+```
+
+### Health Checking
+
+```lua
+function M.wait_for_ready(timeout_ms, callback)
+  local start = vim.loop.now()
+  local timer = vim.loop.new_timer()
+
+  timer:start(100, 100, vim.schedule_wrap(function()
+    require('continue.client').health_check(state.port, function(ok)
+      if ok then
+        timer:stop()
+        timer:close()
+        callback(nil)
+      elseif vim.loop.now() - start > timeout_ms then
+        timer:stop()
+        timer:close()
+        M.stop()
+        callback('Timeout waiting for cn serve to start')
+      end
+    end)
+  end))
+end
+```
 
 ---
 
 ## Testing Strategy
 
-### VSCode
-```typescript
-// test/suite/extension.test.ts
-import * as assert from 'assert';
-import * as vscode from 'vscode';
+### Mock HTTP Server
 
-suite('Extension Test Suite', () => {
-  test('Command is registered', async () => {
-    const commands = await vscode.commands.getCommands();
-    assert.ok(commands.includes('extension.myCommand'));
-  });
-});
+```lua
+-- tests/mock_server.lua
+local M = {}
+
+function M.start()
+  -- Simple mock for testing
+  local state = {
+    chatHistory = {},
+    isProcessing = false,
+    messageQueueLength = 0,
+  }
+
+  return {
+    get_state = function() return state end,
+    send_message = function(msg)
+      table.insert(state.chatHistory, { role = 'user', content = msg })
+      state.messageQueueLength = 1
+      return { queued = true, position = 1 }
+    end,
+  }
+end
+
+return M
 ```
 
-### Neovim
-```lua
--- tests/my_test_spec.lua (using plenary)
-local plugin = require('my-plugin')
+### Integration Tests
 
-describe('plugin', function()
-  it('can be required', function()
-    assert.is_not_nil(plugin)
-  end)
-  
-  it('has setup function', function()
-    assert.is_function(plugin.setup)
+```lua
+-- tests/client_spec.lua
+describe('HTTP client', function()
+  it('can poll state', function()
+    local client = require('continue.client')
+    local got_response = false
+
+    client.get_state(8000, function(err, state)
+      assert.is_nil(err)
+      assert.is_not_nil(state.chatHistory)
+      got_response = true
+    end)
+
+    vim.wait(5000, function() return got_response end)
+    assert.is_true(got_response)
   end)
 end)
 ```
 
-Run with: `nvim --headless -c "PlenaryBustedDirectory tests/"`
-
 ---
 
-*This is a living document. Update as you encounter new patterns during porting.*
+*Last updated: 2025-10-26*
+*Architecture: HTTP client for cn serve*

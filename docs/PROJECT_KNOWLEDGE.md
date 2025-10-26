@@ -3,98 +3,362 @@
 ## Architecture Overview
 
 ### Current Status
-- **Phase**: Initial planning / porting evaluation
-- **Base Sources**: 
-  - Option A: JetBrains plugin (Kotlin)
-  - Option B: VSCode extension (TypeScript)
+- **Phase**: Architecture design & HTTP client implementation
+- **Approach**: Thin Neovim client → `cn serve` HTTP backend
 - **Target**: Neovim plugin (Lua)
+- **Backend**: Continue CLI (`@continuedev/cli`)
 - **Primary Language**: Lua 5.1/LuaJIT
 
 ### Design Decisions
 
-#### Source Plugin Choice for Porting
-**Decision**: [Pending - Analysis below]
+#### Architecture Choice
 
-**RECOMMENDATION: Port from VSCode (TypeScript)**
+**Decision**: Build HTTP client for `cn serve` instead of porting TypeScript
 
-#### Porting Path Comparison
+**Rationale:**
+- **Reuse 100%** of Continue's logic (agent, LLM, tools, MCP)
+- **90% less code**: 5-10K tokens vs 40-70K tokens
+- **Auto-updates**: `npm update @continuedev/cli` gets new features
+- **Same behavior**: Identical to Continue CLI
+- **Simpler maintenance**: No TypeScript tracking needed
+- **Clear separation**: Neovim UI ↔ Continue backend
 
-**VSCode → Neovim (RECOMMENDED)**
-- Pros:
-  - Simpler, more linear code structure
-  - Less abstraction layers to decode
-  - Better documented patterns
-  - Closer conceptual model (async, event-driven)
-  - JSON config → Lua tables (natural translation)
-- Cons:
-  - May rely on Node.js ecosystem (need pure Lua alternatives)
-- Estimated effort: 40-70K tokens
-
-**JetBrains → Neovim**
-- Pros:
-  - More feature-complete (might have richer functionality)
-  - Better separation of concerns (could be cleaner to port)
-- Cons:
-  - Heavy OOP/enterprise patterns → procedural Lua (impedance mismatch)
-  - PSI/threading concepts don't map to Neovim
-  - Gradle/Kotlin DSL noise obscures actual logic
-  - More boilerplate to strip away
-- Estimated effort: 80-120K tokens
-
-#### Technology Stack (Proposed - Neovim Target)
+### Architecture Diagram
 
 ```
-Neovim Plugin Architecture
+┌──────────────────────────────────────────┐
+│  Neovim (continue.nvim Lua plugin)       │
+│  ┌────────────────────────────────────┐  │
+│  │  UI Layer                          │  │
+│  │  • Chat buffer                     │  │
+│  │  • Floating windows                │  │
+│  │  • Syntax highlighting             │  │
+│  └──────────────┬─────────────────────┘  │
+│                 │                         │
+│  ┌──────────────▼─────────────────────┐  │
+│  │  HTTP Client (client.lua)          │  │
+│  │  • GET /state (poll 500ms)         │  │
+│  │  • POST /message                   │  │
+│  │  • POST /permission                │  │
+│  │  • POST /pause                     │  │
+│  └──────────────┬─────────────────────┘  │
+│                 │ vim.loop HTTP          │
+│  ┌──────────────▼─────────────────────┐  │
+│  │  Process Manager (process.lua)     │  │
+│  │  • jobstart('cn serve')            │  │
+│  │  • Health checks                   │  │
+│  │  • Graceful shutdown               │  │
+│  └──────────────┬─────────────────────┘  │
+└─────────────────┼───────────────────────┘
+                  │ HTTP :8000
+                  ▼
+    ┌──────────────────────────────────┐
+    │  cn serve (Node.js/TypeScript)   │
+    │  ┌────────────────────────────┐  │
+    │  │  Continue CLI Backend      │  │
+    │  │  • Agent loop              │  │
+    │  │  • LLM API clients         │  │
+    │  │  • Tool execution          │  │
+    │  │  • MCP servers             │  │
+    │  │  • Session management      │  │
+    │  │  • Permission system       │  │
+    │  └────────────────────────────┘  │
+    └──────────────────────────────────┘
+```
+
+#### Technology Stack
+
+```
+Neovim Plugin (Lua Client)
 ├── Lua 5.1/LuaJIT (Neovim embedded)
-├── Neovim API (nvim_*)
-├── Tree-sitter (optional, for syntax awareness)
-└── No build step (Lua is interpreted)
+├── Neovim API 0.10+ (nvim_*)
+├── vim.loop (libuv) for HTTP & timers
+└── vim.json for JSON parsing (built-in)
 
-Plugin Structure
-├── lua/
-│   └── plugin-name/
-│       ├── init.lua              # Entry point
-│       ├── config.lua            # User configuration
-│       ├── commands.lua          # Ex commands
-│       ├── mappings.lua          # Key bindings
-│       ├── autocmds.lua          # Autocommands
-│       └── utils.lua             # Helpers
-├── plugin/
-│   └── plugin-name.vim          # Legacy Vimscript shim (optional)
-├── doc/
-│   └── plugin-name.txt          # Vim help docs
-└── README.md
+Backend (Continue CLI - External)
+├── Node.js 18+
+├── @continuedev/cli package
+└── All Continue features
 
-Dependencies (Minimal Approach)
-├── Core: Neovim 0.8+ (or 0.9+ for newer APIs)
-├── Optional: plenary.nvim (common utilities)
-└── Optional: nui.nvim (UI components)
+Communication
+├── HTTP REST API (localhost:8000)
+├── JSON payloads
+└── Polling-based (500ms intervals)
 ```
 
-#### Key Architectural Differences
+#### Plugin Structure
 
-**VSCode → Neovim Mapping**
 ```
-VSCode Extension Host    → Neovim embedded Lua VM
-Activation events        → VimEnter, FileType autocommands
-Commands                 → vim.api.nvim_create_user_command()
-Configuration            → vim.g variables or lua modules
-Output Channel           → vim.notify() or custom buffer
-Quick Pick               → vim.ui.select()
-Input Box                → vim.ui.input()
-WebView                  → Floating windows (limited)
-Language Server          → Built-in LSP client
-Diagnostics              → vim.diagnostic.*
+lua/continue/
+├── init.lua              # Entry point, setup()
+├── config.lua            # Configuration schema
+├── process.lua           # cn serve lifecycle
+├── client.lua            # HTTP client
+├── commands.lua          # Neovim commands
+├── ui/
+│   ├── chat.lua          # Chat buffer UI
+│   ├── floating.lua      # Floating windows
+│   └── render.lua        # Message rendering
+└── utils/
+    ├── http.lua          # HTTP helpers
+    └── json.lua          # JSON encode/decode
 ```
 
-**JetBrains → Neovim Mapping**
+## HTTP Protocol Reference
+
+Based on `source/extensions/cli/spec/wire-format.md`
+
+### Endpoints
+
+#### `GET /state`
+**Purpose**: Get current agent state (poll every 500ms)
+
+**Response**:
+```json
+{
+  "chatHistory": [
+    {
+      "role": "user" | "assistant" | "system",
+      "content": "string",
+      "isStreaming": boolean,
+      "messageType": "tool-start" | "tool-result" | "tool-error" | "system",
+      "toolName": "string",
+      "toolResult": "string"
+    }
+  ],
+  "isProcessing": boolean,
+  "messageQueueLength": number,
+  "pendingPermission": {
+    "requestId": "string",
+    "toolName": "string",
+    "args": "object"
+  } | null
+}
 ```
-Action System            → User commands + keymaps
-PSI Tree                 → Tree-sitter queries
-Virtual File System      → vim.loop (libuv) filesystem
-Notifications            → vim.notify()
-Settings Service         → Lua tables in config
-Read/Write Actions       → Not needed (single-threaded)
+
+**Implementation**:
+```lua
+-- Poll every 500ms with vim.loop timer
+local timer = vim.loop.new_timer()
+timer:start(0, 500, vim.schedule_wrap(function()
+  http.get('http://localhost:8000/state', function(state)
+    -- Update UI with new state
+    ui.update(state)
+  end)
+end))
+```
+
+#### `POST /message`
+**Purpose**: Send user message to agent
+
+**Request**:
+```json
+{
+  "message": "string"
+}
+```
+
+**Response**:
+```json
+{
+  "queued": true,
+  "position": number
+}
+```
+
+**Implementation**:
+```lua
+function send_message(text)
+  http.post('http://localhost:8000/message', {
+    message = text
+  }, function(response)
+    vim.notify('Message queued at position ' .. response.position)
+  end)
+end
+```
+
+#### `POST /permission`
+**Purpose**: Approve/reject tool execution
+
+**Request**:
+```json
+{
+  "requestId": "string",
+  "approved": boolean
+}
+```
+
+**Usage**: When `state.pendingPermission` exists, prompt user and send response
+
+#### `POST /pause`
+**Purpose**: Interrupt current agent execution
+
+**Usage**: Mapped to keymap (like `<Esc>` in chat window)
+
+#### `GET /diff`
+**Purpose**: Get git diff from working tree
+
+**Response**:
+```json
+{
+  "diff": "string"
+}
+```
+
+#### `POST /exit`
+**Purpose**: Gracefully shutdown `cn serve`
+
+**Usage**: Called on `:ContinueStop` or `VimLeavePre`
+
+### Protocol Flow
+
+1. **Startup**:
+   - Spawn `cn serve --port 8000`
+   - Wait for health check (`GET /state` returns 200)
+   - Start polling timer
+
+2. **User sends message**:
+   - User types in chat buffer
+   - `POST /message` with content
+   - Continue polling to see updates
+
+3. **Streaming response**:
+   - Poll detects `isStreaming: true`
+   - Update UI incrementally as `content` grows
+   - Stop when `isStreaming: false`
+
+4. **Tool permission**:
+   - Poll detects `pendingPermission`
+   - Show prompt to user
+   - `POST /permission` with approval
+
+5. **Shutdown**:
+   - `POST /exit` to server
+   - Wait for graceful shutdown
+   - Kill process if timeout
+
+---
+
+## Process Management
+
+### Spawning cn serve
+
+```lua
+local M = {}
+local state = {
+  job_id = nil,
+  port = 8000,
+  running = false
+}
+
+function M.start(opts)
+  opts = opts or {}
+  local port = opts.port or 8000
+  
+  local cmd = { 'cn', 'serve', '--port', tostring(port) }
+  
+  state.job_id = vim.fn.jobstart(cmd, {
+    on_stdout = function(_, data)
+      -- Log output
+      for _, line in ipairs(data) do
+        if line ~= '' then
+          vim.notify('[cn serve] ' .. line, vim.log.levels.INFO)
+        end
+      end
+    end,
+    on_stderr = function(_, data)
+      -- Log errors
+      for _, line in ipairs(data) do
+        if line ~= '' then
+          vim.notify('[cn serve ERROR] ' .. line, vim.log.levels.ERROR)
+        end
+      end
+    end,
+    on_exit = function(_, code)
+      state.running = false
+      state.job_id = nil
+      if code ~= 0 then
+        vim.notify('cn serve exited with code ' .. code, vim.log.levels.ERROR)
+      end
+    end,
+  })
+  
+  if state.job_id <= 0 then
+    vim.notify('Failed to start cn serve', vim.log.levels.ERROR)
+    return false
+  end
+  
+  state.port = port
+  state.running = true
+  
+  -- Wait for server to be ready
+  M.wait_for_ready(5000)  -- 5 second timeout
+  
+  return true
+end
+
+function M.wait_for_ready(timeout_ms)
+  local start = vim.loop.now()
+  local timer = vim.loop.new_timer()
+  
+  timer:start(100, 100, vim.schedule_wrap(function()
+    -- Health check
+    http.get('http://localhost:' .. state.port .. '/state', function(response)
+      if response then
+        timer:stop()
+        timer:close()
+        vim.notify('cn serve ready', vim.log.levels.INFO)
+      elseif vim.loop.now() - start > timeout_ms then
+        timer:stop()
+        timer:close()
+        M.stop()
+        vim.notify('cn serve failed to start', vim.log.levels.ERROR)
+      end
+    end)
+  end))
+end
+
+function M.stop()
+  if state.job_id then
+    -- Try graceful shutdown first
+    http.post('http://localhost:' .. state.port .. '/exit', {}, function()
+      -- Give it 2 seconds to exit
+      vim.defer_fn(function()
+        if state.job_id then
+          vim.fn.jobstop(state.job_id)
+        end
+      end, 2000)
+    end)
+  end
+end
+
+-- Auto-cleanup on Neovim exit
+vim.api.nvim_create_autocmd('VimLeavePre', {
+  callback = function()
+    M.stop()
+  end,
+})
+
+return M
+```
+
+### Health Checks
+
+```lua
+function M.health_check()
+  if not state.running then
+    return { status = 'stopped' }
+  end
+  
+  -- Quick ping
+  http.get('http://localhost:' .. state.port .. '/state', function(response)
+    if response then
+      return { status = 'running', port = state.port }
+    else
+      return { status = 'error', message = 'Server not responding' }
+    end
+  end)
+end
 ```
 
 ---
@@ -795,6 +1059,464 @@ local function create_float()
   return buf, win
 end
 ```
+
+---
+
+## WebSocket vs HTTP Polling
+
+### Current Approach: HTTP Polling
+
+**How it works:**
+- `vim.loop.new_timer()` polls `GET /state` every 500ms
+- Simple HTTP requests via curl or vim.loop TCP
+- Updates UI when state changes detected
+
+**Pros:**
+- ✅ Simple implementation (~50 LOC)
+- ✅ Works with existing `cn serve` HTTP API
+- ✅ No external dependencies
+- ✅ Easy to debug (curl can test endpoints)
+- ✅ Proven approach (Continue CLI uses same for `cn remote`)
+
+**Cons:**
+- ⚠️ Slight latency (max 500ms for updates)
+- ⚠️ Constant network traffic (2 req/sec)
+
+### WebSocket Alternative (NOT Recommended)
+
+**Why WebSockets would be better:**
+- Real-time updates (no polling delay)
+- Lower network overhead
+- Bidirectional communication
+
+**Why we DON'T use WebSockets:**
+
+1. **Neovim has NO native WebSocket support**
+   - Only has `vim.loop` (TCP sockets)
+   - WebSocket requires HTTP upgrade + frame encoding
+   - Would need to vendor entire WebSocket library
+
+2. **Implementation complexity:**
+   ```
+   Option 1: Vendor Lua WebSocket library
+   - Need ~1000 LOC WebSocket implementation
+   - LuaJIT compatibility issues
+   - `cn serve` doesn't expose WebSocket endpoint
+   Complexity: 🔴 High
+
+   Option 2: Proxy process
+   Neovim ←→ Proxy (Node.js) ←→ cn serve
+           stdio/JSON        WebSocket
+   - Ship separate Node.js proxy
+   - Manage additional process lifecycle
+   - More debugging complexity
+   Complexity: 🔴 Very High
+
+   Option 3: Implement WebSocket from scratch
+   - ~2000+ LOC for spec compliance
+   - Fragmentation, ping/pong, handshake
+   Complexity: 🔴 Extremely High
+   ```
+
+3. **Performance reality check:**
+   - 500ms polling = ~10ms latency savings with WebSocket
+   - Not noticeable in chat UI
+   - HTTP polling overhead is negligible
+
+**Decision: Stick with HTTP polling**
+- Good enough for chat use case
+- Can tune polling interval based on activity
+- Could add WebSocket as opt-in feature later if needed
+
+---
+
+## Dependency Management
+
+### The cn Binary
+
+**Problem:** Plugin depends on `@continuedev/cli` being installed
+
+**What can go wrong:**
+1. `cn` not in PATH
+2. Wrong Node.js version (need 18+)
+3. `cn` installed but outdated version
+4. Multiple Node versions (nvm, fnm conflicts)
+
+**Handling Strategy:**
+
+```lua
+-- lua/continue/init.lua
+local function check_dependencies()
+  -- Check if cn exists
+  local cn_path = vim.fn.exepath('cn')
+  if cn_path == '' then
+    vim.notify(
+      'Continue.nvim requires the Continue CLI.\n' ..
+      'Install: npm install -g @continuedev/cli',
+      vim.log.levels.ERROR
+    )
+    return false
+  end
+
+  -- Check Node version
+  local node_version = vim.fn.system('node --version')
+  local major = tonumber(node_version:match('v(%d+)'))
+  if major and major < 18 then
+    vim.notify(
+      string.format('Continue requires Node.js 18+, found: %s', node_version),
+      vim.log.levels.ERROR
+    )
+    return false
+  end
+
+  -- Check cn version (optional but helpful)
+  local cn_version = vim.fn.system('cn --version')
+  vim.notify(string.format('Using Continue CLI: %s', cn_version:gsub('\n', '')), vim.log.levels.INFO)
+
+  return true
+end
+
+function M.setup(opts)
+  if not check_dependencies() then
+    vim.notify('Continue.nvim: Dependency check failed, plugin disabled', vim.log.levels.WARN)
+    return
+  end
+  -- ... rest of setup
+end
+```
+
+**User Experience:**
+- Clear error messages with installation instructions
+- Check on first `:Continue` command, not on Neovim startup
+- Provide `:ContinueHealth` command for diagnostics
+
+---
+
+## Port Selection Strategy
+
+### The Problem
+
+**Current docs say:** "use port 8000"
+
+**What breaks:**
+- Port 8000 already in use (other dev server)
+- Multiple Neovim instances want Continue
+- Firewall blocks port 8000
+
+### Proposed Solution
+
+**1. Configurable Port with Auto-increment:**
+
+```lua
+-- lua/continue/config.lua
+M.config = {
+  port = 8000,  -- default
+  port_range = { 8000, 8010 },  -- try ports in this range
+  auto_find_port = true,
+}
+
+-- lua/continue/process.lua
+local function find_available_port(start_port, end_port)
+  for port = start_port, end_port do
+    -- Try to bind to port
+    local server = vim.loop.new_tcp()
+    local ok = pcall(function()
+      server:bind('127.0.0.1', port)
+    end)
+    server:close()
+    
+    if ok then
+      return port
+    end
+  end
+  return nil
+end
+
+function M.start(config)
+  local port = config.port
+  
+  if config.auto_find_port then
+    port = find_available_port(
+      config.port_range[1],
+      config.port_range[2]
+    )
+    
+    if not port then
+      vim.notify(
+        string.format('No available ports in range %d-%d',
+          config.port_range[1], config.port_range[2]),
+        vim.log.levels.ERROR
+      )
+      return false
+    end
+    
+    vim.notify(string.format('Using port %d', port), vim.log.levels.INFO)
+  end
+  
+  -- Start cn serve with found port
+  state.port = port
+  -- ...
+end
+```
+
+**2. User Override:**
+
+```lua
+-- User can explicitly set port in config
+require('continue').setup({
+  port = 9000,  -- use this specific port
+  auto_find_port = false,  -- don't search
+})
+```
+
+**3. Handle Port Collisions:**
+
+- If `cn serve` fails to start, check stderr for "port in use"
+- Automatically retry with next port
+- Store actual port in state for HTTP client to use
+
+---
+
+## State Management Gotchas
+
+### Race Conditions with Polling
+
+**Scenario:** User sends message while agent is streaming
+
+**Timeline:**
+```
+T=0ms:    Poll returns state (isProcessing: true, streaming message)
+T=100ms:  User presses <CR> to send new message
+T=200ms:  POST /message queued
+T=500ms:  Poll returns state (old message still streaming)
+T=1000ms: Poll returns state (new message in queue)
+```
+
+**Problem:** UI might briefly show stale state
+
+**Solution 1: Optimistic UI Updates**
+```lua
+-- Immediately update UI when user sends message
+function send_message(text)
+  -- Add to local UI immediately
+  ui.add_user_message(text)
+  
+  -- Send to server
+  client.post_message(8000, text, function(err, response)
+    if err then
+      -- Rollback UI update
+      ui.remove_last_message()
+      vim.notify('Failed to send: ' .. err, vim.log.levels.ERROR)
+    end
+  end)
+end
+```
+
+**Solution 2: Debounce User Input**
+```lua
+-- Disable input while processing
+local input_enabled = true
+
+function on_user_input(text)
+  if not input_enabled then
+    vim.notify('Please wait for current response', vim.log.levels.WARN)
+    return
+  end
+  
+  input_enabled = false
+  send_message(text, function()
+    input_enabled = true
+  end)
+end
+```
+
+**Solution 3: Message IDs (if needed)**
+```lua
+-- Track which messages we've seen
+local seen_message_ids = {}
+
+function update_from_state(state)
+  for _, msg in ipairs(state.chatHistory) do
+    local msg_id = msg.id or (msg.role .. msg.content:sub(1, 50))
+    if not seen_message_ids[msg_id] then
+      ui.render_message(msg)
+      seen_message_ids[msg_id] = true
+    end
+  end
+end
+```
+
+### Concurrent Modification
+
+**Problem:** Polling timer fires while UI is rendering
+
+**Solution:** Use `vim.schedule()` wrapper
+```lua
+timer:start(0, 500, vim.schedule_wrap(function()
+  -- All UI updates happen in main thread
+  http.get('/state', function(state)
+    -- This callback also wrapped with vim.schedule in http module
+    ui.update_from_state(state)
+  end)
+end))
+```
+
+---
+
+## Performance Tuning
+
+### Polling Interval
+
+**Current:** 500ms (2 requests/sec)
+
+**Too aggressive?**
+- Depends on use case
+- Chat UI: 500ms is fine (humans type slowly)
+- Streaming code generation: might want 100ms for smoother updates
+- Idle state: could slow down to 2000ms
+
+**Dynamic Polling Strategy:**
+
+```lua
+local function get_polling_interval(state)
+  if state.isProcessing then
+    return 100  -- Fast updates while agent working
+  elseif state.messageQueueLength > 0 then
+    return 200  -- Medium speed while messages queued
+  else
+    return 1000  -- Slow when idle
+  end
+end
+
+function start_polling(port, callback)
+  local timer = vim.loop.new_timer()
+  
+  local function poll()
+    http.get('/state', function(state)
+      callback(state)
+      
+      -- Adjust next interval based on state
+      local interval = get_polling_interval(state)
+      timer:stop()
+      timer:start(interval, interval, vim.schedule_wrap(poll))
+    end)
+  end
+  
+  timer:start(0, 500, vim.schedule_wrap(poll))
+  return timer
+end
+```
+
+**Measuring Performance:**
+
+```lua
+-- Add to http.lua
+local stats = {
+  request_count = 0,
+  total_time = 0,
+  errors = 0,
+}
+
+function M.get(url, callback)
+  local start = vim.loop.hrtime()
+  stats.request_count = stats.request_count + 1
+  
+  -- ... make request ...
+  
+  local duration = (vim.loop.hrtime() - start) / 1e6  -- ms
+  stats.total_time = stats.total_time + duration
+  
+  -- Log if slow
+  if duration > 100 then
+    vim.notify(string.format('Slow request: %dms', duration), vim.log.levels.WARN)
+  end
+end
+
+-- Expose stats
+function M.get_stats()
+  return {
+    requests = stats.request_count,
+    avg_time = stats.total_time / stats.request_count,
+    errors = stats.errors,
+  }
+end
+```
+
+**User can check:**
+```vim
+:lua print(vim.inspect(require('continue.utils.http').get_stats()))
+" { requests = 1250, avg_time = 15.3, errors = 2 }
+```
+
+---
+
+## Security Considerations
+
+### Localhost-Only by Design
+
+**Current approach:**
+- `cn serve` binds to `127.0.0.1:8000`
+- No authentication
+- Plain HTTP (not HTTPS)
+
+**This is INTENTIONAL and acceptable because:**
+1. **Local-only traffic** - Never leaves your machine
+2. **User's own code** - You trust your own Continue config
+3. **Short-lived** - Server auto-stops after timeout
+4. **Neovim process** - Same privileges as your editor
+
+### Potential Issues
+
+**Port Forwarding Attack:**
+```bash
+# Bad actor could do:
+ssh -L 8000:localhost:8000 user@victim-machine
+# Now they can access victim's Continue server
+```
+
+**Mitigation:**
+- Document this risk in README
+- `cn serve` should reject non-localhost connections (already does)
+- Don't expose port through firewall/router
+
+**Network Sniffing:**
+- Since it's HTTP not HTTPS, localhost traffic could be sniffed
+- In practice: localhost is isolated, not routable
+- If paranoid: could add simple token auth
+
+### Recommended Security Best Practices
+
+**Document in README:**
+```markdown
+## Security Notes
+
+- Continue.nvim starts `cn serve` on localhost only
+- No authentication required (local process)
+- Do NOT forward the port to external networks
+- Do NOT use on untrusted machines
+- Server auto-stops after inactivity timeout
+
+If you're concerned about local security:
+- Review your `~/.continue/config.json`
+- Don't use untrusted MCP servers
+- Continue runs with your user's file permissions
+```
+
+**Optional: Token Auth (future enhancement)**
+```lua
+-- Generate random token on startup
+local token = vim.fn.system('uuidgen'):gsub('\n', '')
+
+-- Pass to cn serve
+vim.fn.jobstart({ 'cn', 'serve', '--token', token })
+
+-- Include in requests
+http.post('/message', body, {
+  headers = { Authorization = 'Bearer ' .. token }
+})
+```
+
+**Not worth it for v1** - adds complexity for minimal gain
 
 ---
 

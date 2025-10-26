@@ -1,147 +1,248 @@
-# Project Context: Continue Plugin Port
+# Project Context: Continue Neovim Client
 
 ## What We're Doing
 
-Porting an existing plugin to Neovim (Lua).
+Building a **thin Neovim client** for the Continue CLI (`cn serve`).
 
-**Source**: VSCode extension (TypeScript) of contiudev/continue
-**Target**: Neovim plugin (Lua)  
-**Status**: [UPDATE THIS - e.g., "Phase 2: Core Logic"]
+**Approach**: HTTP client → `cn serve` backend (NOT porting TypeScript to Lua)
+**Plugin Name**: continue.nvim - AI code assistant for Neovim  
+**Status**: Phase 0 - Architecture Design
+
+## Architecture Overview
+
+```
+┌─────────────────────────────────┐
+│         Neovim                  │
+│  ┌──────────────────────────┐   │
+│  │  continue.nvim           │   │
+│  │  (Lua - ~5-10K tokens)   │   │
+│  │                          │   │
+│  │  • Process manager       │   │  HTTP/JSON
+│  │  • HTTP client           │───┼────────┐
+│  │  • UI (buffers/windows)  │   │        │
+│  │  • Commands & keymaps    │   │        │
+│  └──────────────────────────┘   │        │
+│           │                      │        ▼
+│  ┌────────▼──────────┐           │  ┌─────────────────┐
+│  │  Snacks Terminal  │───spawn───┼─▶│   cn serve      │
+│  └───────────────────┘           │  │  (Node.js/TS)   │
+└─────────────────────────────────┘  │                 │
+                                     │  • Agent logic  │
+                                     │  • LLM APIs     │
+                                     │  • Tools/MCP    │
+                                     │  • All Continue │
+                                     │    features     │
+                                     └─────────────────┘
+```
 
 ## Quick Facts
 
-- **Decision**: Port from VSCode, not JetBrains (~50% cheaper in tokens/effort)
-- **Plugin Name**: Continue - AI code assistant
-- **Main Features**: Agent, Chat, Edit, Autocomplete
-- **Estimated effort**: 40-70K tokens
-- **LOC reduction**: Expect 30-40% less code in Lua vs TypeScript
-- **Key challenges**:
-  - AI/LLM integration (need to handle API calls to various AI providers)
-  - WebView GUI → Neovim floating windows/buffers
-  - Autocomplete integration with Neovim's completion system
-  - Async streaming responses from LLM APIs
+- **Decision**: Use `cn serve` backend instead of porting 40-70K tokens
+- **Savings**: 90% less code - reuse ALL Continue's logic
+- **Plugin Name**: continue.nvim
+- **Main Features**: Agent, Chat, Edit, Autocomplete (via Continue CLI)
+- **Estimated effort**: 5-10K tokens (just the client wrapper)
+- **Backend**: `@continuedev/cli` (installed via npm)
+- **Protocol**: HTTP REST API (documented in source/extensions/cli/spec/wire-format.md)
+- **Key components**:
+  - Process lifecycle (spawn/stop `cn serve`)
+  - HTTP polling client (state updates)
+  - Buffer/window UI (display chat, tools)
+  - Neovim command integration
 
 ## File Structure
 
 ```
 repo/
-├── source/                        # continuedev/continue as a submodule
-│   └── extensions/vscode/         # THIS is what we're porting
+├── source/                        # continuedev/continue submodule (reference)
+│   └── extensions/cli/            # cn serve implementation (Node.js)
 ├── lua/
-│   └── continue-nvim/
+│   └── continue/
 │       ├── init.lua               # Entry point & setup()
-│       ├── config/
-│       │   └── init.lua           # Configuration schema & defaults
-│       ├── chat/
-│       │   └── init.lua           # Chat functionality
-│       ├── edit/
-│       │   └── init.lua           # Inline edit functionality
-│       ├── autocomplete/
-│       │   └── init.lua           # AI autocomplete integration
-│       ├── agent/
-│       │   └── init.lua           # Agent/task automation
+│       ├── config.lua             # Config schema (paths, ports, etc.)
+│       ├── process.lua            # cn serve lifecycle management
+│       ├── client.lua             # HTTP client (GET /state, POST /message)
 │       ├── ui/
+│       │   ├── chat.lua           # Chat buffer UI
 │       │   ├── floating.lua       # Floating windows
-│       │   └── buffers.lua        # Buffer management
+│       │   └── render.lua         # Message rendering
+│       ├── commands.lua           # Neovim commands
 │       └── utils/
-│           ├── llm.lua            # LLM API client
-│           └── async.lua          # Async helpers
+│           ├── http.lua           # HTTP helpers (vim.loop/curl)
+│           └── json.lua           # JSON encode/decode
 ├── plugin/
-│   └── continue-nvim.lua          # Auto-load commands
+│   └── continue.lua               # Auto-load commands
 ├── doc/
-│   └── continue-nvim.txt          # Vim help docs
-├── docs/                          # Porting documentation
-│   ├── PROJECT_KNOWLEDGE.md       # Architecture, gotchas, APIs
-│   ├── API_MAPPING.md             # VSCode → Neovim translations
-│   ├── QUICK_REFERENCE.md         # One-page cheatsheet
-│   └── PORTING_CHECKLIST.md       # Progress tracker
+│   └── continue.txt               # Vim help docs
+├── docs/                          # Development documentation
+│   ├── PROJECT_KNOWLEDGE.md       # Architecture, HTTP protocol
+│   ├── API_MAPPING.md             # HTTP API → Neovim integration
+│   ├── QUICK_REFERENCE.md         # Common patterns
+│   └── CHECKLIST.md               # Progress tracker
 └── CLAUDE.md                      # This file
+```
+
+## HTTP Protocol Reference
+
+From `source/extensions/cli/spec/wire-format.md`:
+
+### Endpoints
+
+- `GET /state` - Get current chat state (poll every 500ms)
+  - Returns: `{ chatHistory, isProcessing, messageQueueLength, pendingPermission }`
+- `POST /message` - Send user message
+  - Body: `{ message: string }`
+  - Returns: `{ queued, position }`
+- `POST /permission` - Approve/reject tool permission
+  - Body: `{ requestId, approved }`
+- `POST /pause` - Interrupt current processing
+- `GET /diff` - Get git diff from working tree
+- `POST /exit` - Graceful shutdown
+
+### Message Types
+
+```json
+{
+  "role": "user" | "assistant" | "system",
+  "content": "string",
+  "isStreaming": boolean,
+  "messageType": "tool-start" | "tool-result" | "tool-error" | "system",
+  "toolName": "string",
+  "toolResult": "string"
+}
 ```
 
 ## When You're Asked To...
 
-### Analyze source code
-1. Read `docs/API_MAPPING.md` for translation patterns
-2. Focus on: commands, config schema, event handlers
-3. Update `docs/PORTING_CHECKLIST.md` with findings
+### Implement HTTP client
+1. Check `docs/API_MAPPING.md` for endpoint patterns
+2. Use `vim.loop` for HTTP requests (or curl via `vim.fn.system`)
+3. Implement state polling with `vim.loop.new_timer()`
+4. Handle JSON encode/decode with `vim.json` (Neovim 0.10+) or vendored lib
 
-### Implement a feature
-1. Check `docs/QUICK_REFERENCE.md` for common patterns
-2. Use Morph for file edits (it's installed, more efficient than native)
-3. Remember: Lua tables are 1-indexed, buffers are 0-indexed
-4. Module pattern: `local M = {}` ... `return M`
+### Build UI components
+1. Check `docs/QUICK_REFERENCE.md` for floating window patterns
+2. Render chat messages in a buffer
+3. Handle streaming updates (character-by-character)
+4. Display tool calls and results
 
-### Debug something
-1. Check `docs/PROJECT_KNOWLEDGE.md` > Pain Points & Gotchas
-2. Common issues: module caching, pcall error handling, vim.schedule for async
-3. Debug pattern: `print(vim.inspect(value))`
+### Manage cn serve process
+1. Use `vim.fn.jobstart()` to spawn `cn serve`
+2. Track PID for graceful shutdown
+3. Health check via `GET /state`
+4. Auto-restart on crash (optional)
+
+### Debug
+1. Check `docs/PROJECT_KNOWLEDGE.md` > Debugging
+2. Test HTTP endpoints with `curl` first
+3. Use `:messages` to see errors
+4. Log to `/tmp/continue-nvim.log`
 
 ### Test changes
-```bash
-# Hot reload without restarting Neovim:
-:lua package.loaded['plugin-name'] = nil
-:lua require('plugin-name').setup()
+```vim
+" Hot reload without restarting Neovim:
+:lua package.loaded['continue'] = nil
+:lua require('continue').setup()
+
+" Check process status:
+:lua print(vim.inspect(require('continue.process').status()))
 ```
 
 ## Critical Reminders
 
-**Lua Gotchas:**
-- Arrays/tables: `items[1]` not `items[0]`
-- No async/await: use callbacks or plenary.async
-- No try/catch: use `pcall(fn)` → `(ok, result)`
-- Modules cache: clear `package.loaded['module']` during dev
+**Dependencies:**
+- **Backend**: `npm install -g @continuedev/cli` (user responsibility)
+- **Neovim**: 0.10+ (for `vim.loop`, `vim.json`, floating windows)
+- **Optional**: `curl` or use `vim.loop` for HTTP
+- **Optional**: `Snacks.nvim` for better terminal integration
 
-**Neovim Patterns:**
-- Commands: `vim.api.nvim_create_user_command()`
-- Autocommands: Always use augroups with `clear = true`
-- Keymaps: `vim.keymap.set()` not `vim.api.nvim_set_keymap()`
-- UI: `vim.ui.input()` / `vim.ui.select()` / floating windows
+**HTTP Client Patterns:**
+- Poll `/state` every 500ms using `vim.loop.new_timer()`
+- Update UI on state changes (diff chatHistory)
+- Queue user messages via `POST /message`
+- Handle interrupts with `POST /pause`
+
+**Process Management:**
+- Spawn `cn serve` with `vim.fn.jobstart()`
+- Pass `--port`, `--timeout`, `--config` flags
+- Store PID for cleanup on VimLeavePre
+- Health check: ping `/state` after spawn
+
+**UI Patterns:**
+- Scratch buffer for chat (`:setlocal buftype=nofile`)
+- Floating window for quick interactions
+- Render streaming responses incrementally
+- Syntax highlighting for code blocks
+- Use `vim.json` for all JSON operations (0.10+ built-in)
 
 ## Current State
 
 **Completed:**
-- [x] Strategic planning & documentation review
-- [x] Directory structure created
-- [x] Source analysis (Continue = AI assistant with Chat/Edit/Autocomplete/Agent)
-- [ ] Base structure (skeleton files)
-- [ ] Core logic port
-- [ ] Feature parity
-- [ ] Polish & docs
+- [x] Architecture decision (HTTP client vs full port)
+- [x] HTTP protocol analysis (wire-format.md)
+- [x] Documentation updated for new approach
+- [ ] Project structure created
+- [ ] HTTP client implementation
+- [ ] Process manager
+- [ ] UI implementation
+- [ ] Command integration
 
-**Active Phase:** Phase 0 - Initial setup
+**Active Phase:** Phase 0 - Architecture & Planning
 
-**Current Focus:** Creating plugin skeleton and analyzing Continue's architecture
+**Current Focus:** Updating all docs to reflect HTTP client architecture
 
 **Next Tasks:**
-1. Create init.lua with basic setup()
-2. Inventory all Continue commands from package.json
-3. Design LLM integration strategy (HTTP client for AI APIs)
-4. Plan UI approach (floating windows vs buffers)
+1. Create Lua module structure
+2. Implement basic HTTP client (GET /state)
+3. Implement process manager (spawn cn serve)
+4. Build minimal chat UI
+5. Wire up commands (:Continue, :ContinueChat)
 
-**Key Decisions Needed:**
-- Which AI providers to support initially (OpenAI, Claude, local models?)
-- Async strategy: plenary.async vs callback-based
-- UI approach: How to replace Continue's WebView GUI
+**Key Decisions Made:**
+- ✓ Use `cn serve` instead of porting
+- ✓ HTTP polling (500ms) for state sync
+- ✓ Snacks terminal for process display (optional)
+- ✓ Floating windows for chat UI
+- Pending: HTTP lib choice (vim.loop vs curl)
+- Pending: JSON lib (vim.json vs vendored)
+
+## Benefits of This Approach
+
+**For Users:**
+- **Always up-to-date**: `npm update @continuedev/cli` gets latest Continue features
+- **Same behavior**: Identical to Continue CLI (no divergence)
+- **Less bugs**: Reuse battle-tested Continue codebase
+
+**For Development:**
+- **90% less code**: Just HTTP client + UI wrapper
+- **Faster iteration**: Changes only to thin Neovim layer
+- **Easier maintenance**: No need to track Continue's TypeScript changes
+- **Automatic features**: New Continue features "just work"
+
+**For LLMs:**
+- **Minimal token budget**: 5-10K tokens vs 40-70K
+- **Clear scope**: HTTP client + UI, not full agent logic
+- **Simple testing**: Mock HTTP responses, no LLM mocking needed
 
 ## Quick Links
 
 When you need:
-- **API translation** → `docs/API_MAPPING.md`
-- **Copy-paste snippets** → `docs/QUICK_REFERENCE.md`
-- **Deep reference** → `docs/PROJECT_KNOWLEDGE.md`
-- **Progress check** → `docs/PORTING_CHECKLIST.md`
+- **HTTP protocol** → `source/extensions/cli/spec/wire-format.md`
+- **API mapping** → `docs/API_MAPPING.md`
+- **Code snippets** → `docs/QUICK_REFERENCE.md`
+- **Architecture** → `docs/PROJECT_KNOWLEDGE.md`
+- **Progress** → `docs/CHECKLIST.md`
 
 ## Notes for LLMs
 
-- **Tool preference**: Use Morph for file edits (it's installed)
-- **Token awareness**: Reference docs are verbose; read selectively
-- **Incremental**: Build one feature at a time, test frequently
-- **Update this file**: Keep "Current State" section current
-- **Keep the docs up-to-date**: Should anything change in design, etc.: update the relevant docs
-- **Ask first**: If unclear, ask before assuming
+- **Tool preference**: Use Morph for file edits
+- **Focus**: HTTP client + UI, NOT LLM logic
+- **Reuse**: Let `cn serve` handle all AI/agent work
+- **Incremental**: Build HTTP client first, then UI, then commands
+- **Update docs**: Keep this file and docs/ in sync
+- **Ask first**: If unclear about architecture, ask
 
 ---
 
 *Last updated: 2025-10-26*
-*Current phase: Phase 0 - Initial Setup & Analysis*
-
+*Current phase: Phase 0 - Architecture & Documentation Update*
