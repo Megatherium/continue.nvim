@@ -1,0 +1,33 @@
+# Neovim plugin specific
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Logs
+*.log
+
+# Test artifacts
+/tests/results/
+/tests/output/
+
+# Local dev
+/.luarc.json
+/.stylua.toml
+
+# Dependencies (if using luarocks)
+/lua_modules/
+/luarocks/
+
+# Build artifacts
+/build/
+/dist/
+
+# Editor specific
+.vscode/
+.idea/
+*.iml
+
+# Temporary files
+/tmp/
+/.tmp/
