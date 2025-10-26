@@ -74,9 +74,107 @@ function M.setup(user_config, dependency_checker)
     print(vim.inspect(status))
   end, { desc = 'Show Continue status' })
 
-  -- TODO: :ContinueDiff - Show git diff
-  -- TODO: :ContinueHealth - Health check
-  -- TODO: :ContinueLog - Show logs
+  -- :ContinueDiff - Show git diff
+  vim.api.nvim_create_user_command('ContinueDiff', function()
+    local process = require('continue.process')
+    local client = require('continue.client')
+    local status = process.status()
+
+    if not status.running then
+      vim.notify('Continue server not running', vim.log.levels.WARN)
+      return
+    end
+
+    client.get_diff(status.port, function(err, diff)
+      if err then
+        vim.notify('Failed to get diff: ' .. err, vim.log.levels.ERROR)
+        return
+      end
+
+      -- Display diff in a new buffer
+      local bufnr = vim.api.nvim_create_buf(false, true)
+      vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, vim.split(diff, '\n'))
+      vim.api.nvim_buf_set_option(bufnr, 'filetype', 'diff')
+      vim.api.nvim_buf_set_option(bufnr, 'buftype', 'nofile')
+      vim.api.nvim_buf_set_name(bufnr, 'Continue Diff')
+
+      -- Open in split
+      vim.cmd('split')
+      vim.api.nvim_win_set_buf(0, bufnr)
+    end)
+  end, { desc = 'Show git diff from Continue server' })
+
+  -- :ContinueHealth - Health check
+  vim.api.nvim_create_user_command('ContinueHealth', function()
+    local health_results = {}
+
+    -- Check dependencies
+    table.insert(health_results, '=== Continue.nvim Health Check ===')
+    table.insert(health_results, '')
+
+    -- Check Neovim version
+    local nvim_version = vim.version()
+    if vim.fn.has('nvim-0.10') == 1 then
+      table.insert(health_results, '✓ Neovim version: ' .. nvim_version.major .. '.' .. nvim_version.minor .. ' (OK)')
+    else
+      table.insert(health_results, '✗ Neovim version: ' .. nvim_version.major .. '.' .. nvim_version.minor .. ' (need 0.10+)')
+    end
+
+    -- Check Node.js
+    local node_version = vim.fn.system('node --version')
+    if vim.v.shell_error == 0 then
+      table.insert(health_results, '✓ Node.js: ' .. node_version:gsub('\n', ''))
+    else
+      table.insert(health_results, '✗ Node.js: not found')
+    end
+
+    -- Check cn binary
+    local cn_path = vim.fn.exepath(config.cn_bin or 'cn')
+    if cn_path ~= '' then
+      local cn_version = vim.fn.system((config.cn_bin or 'cn') .. ' --version')
+      if vim.v.shell_error == 0 then
+        table.insert(health_results, '✓ Continue CLI: ' .. cn_version:gsub('\n', '') .. ' (' .. cn_path .. ')')
+      else
+        table.insert(health_results, '✓ Continue CLI: installed at ' .. cn_path)
+      end
+    else
+      table.insert(health_results, '✗ Continue CLI: not found (run: npm install -g @continuedev/cli)')
+    end
+
+    -- Check curl
+    local http = require('continue.utils.http')
+    if http.has_curl() then
+      table.insert(health_results, '✓ curl: available')
+    else
+      table.insert(health_results, '✗ curl: not found')
+    end
+
+    -- Check server status
+    table.insert(health_results, '')
+    local process = require('continue.process')
+    local process_status = process.status()
+
+    if process_status.running then
+      table.insert(health_results, '✓ Server: running on port ' .. process_status.port)
+
+      -- Synchronous health check using curl
+      local health_check_cmd = 'curl -s -m 2 http://localhost:' .. process_status.port .. '/state 2>&1'
+      local health_output = vim.fn.system(health_check_cmd)
+      
+      if vim.v.shell_error == 0 and health_output:match('"isProcessing"') then
+        table.insert(health_results, '✓ Server health: OK')
+      else
+        table.insert(health_results, '✗ Server health: unreachable or unhealthy')
+      end
+    else
+      table.insert(health_results, '○ Server: not running')
+    end
+
+    -- Display all results at once
+    vim.notify(table.concat(health_results, '\n'), vim.log.levels.INFO)
+  end, { desc = 'Check Continue.nvim health' })
+
+  -- TODO: :ContinueLog - Show logs (if we add logging to file)
 end
 
 return M

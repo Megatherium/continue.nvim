@@ -153,6 +153,78 @@ function M.send_permission(port, request_id, approved, callback)
   end)
 end
 
+-- Get git diff from server
+-- @param port number - Port number
+-- @param callback function(err, diff) - Callback with diff string
+function M.get_diff(port, callback)
+  local http = require('continue.utils.http')
+
+  http.get(string.format('http://localhost:%d/diff', port), function(err, response)
+    if err then
+      vim.notify('Failed to get diff: ' .. err, vim.log.levels.ERROR)
+      if callback then
+        callback(err, nil)
+      end
+      return
+    end
+
+    -- Handle 404 (not a git repo) and 500 (git error)
+    if response.status == 404 then
+      vim.notify('Not in a git repository', vim.log.levels.WARN)
+      if callback then
+        callback('Not a git repository', nil)
+      end
+      return
+    end
+
+    if response.status >= 400 then
+      vim.notify('Git diff failed: HTTP ' .. response.status, vim.log.levels.ERROR)
+      if callback then
+        callback('Git error', nil)
+      end
+      return
+    end
+
+    local ok, data = pcall(vim.json.decode, response.body)
+    if ok and data.diff then
+      if callback then
+        callback(nil, data.diff)
+      end
+    else
+      if callback then
+        callback('Invalid response', nil)
+      end
+    end
+  end)
+end
+
+-- Health check - ping server to verify it's running
+-- @param port number - Port number
+-- @param callback function(err, ok) - Callback with health status
+function M.health_check(port, callback)
+  local http = require('continue.utils.http')
+
+  http.get(string.format('http://localhost:%d/state', port), function(err, response)
+    if err then
+      if callback then
+        callback(err, false)
+      end
+      return
+    end
+
+    -- Any successful response means server is healthy
+    if response.status >= 200 and response.status < 300 then
+      if callback then
+        callback(nil, true)
+      end
+    else
+      if callback then
+        callback('Unhealthy', false)
+      end
+    end
+  end)
+end
+
 -- Get current client status
 -- @return table - Status information
 function M.status()
@@ -163,7 +235,6 @@ function M.status()
   }
 end
 
--- TODO: Implement GET /diff endpoint
 -- TODO: Add dynamic polling interval (100ms when active, 1000ms when idle)
 -- TODO: Add request queue for rate limiting
 -- TODO: Add connection recovery logic

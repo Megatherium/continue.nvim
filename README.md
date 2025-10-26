@@ -1,149 +1,247 @@
 # Continue.nvim
 
-> **Status**: 🚧 Early Development - Not ready for use yet
+> **Status**: 🚧 Phase 1 Complete - HTTP Client & Core UI Implemented
 
-AI code assistant for Neovim - a port of the [Continue VSCode extension](https://github.com/continuedev/continue).
+AI code assistant for Neovim - a **lightweight HTTP client** for [Continue CLI](https://github.com/continuedev/continue).
 
-## What is Continue?
+## Architecture: HTTP Client Approach
 
-Continue brings AI-powered development assistance directly into your editor with:
+Instead of porting the entire Continue codebase (40-70K tokens of TypeScript), continue.nvim is a **thin HTTP client** that connects to `cn serve` (the Continue CLI backend).
 
-- **💬 Chat** - Ask questions about your code and get contextual answers
-- **✏️ Edit** - Modify code inline with natural language instructions
-- **⚡ Autocomplete** - AI-powered code suggestions as you type
-- **🤖 Agent** - Automated development task execution
+**Benefits:**
+- 🚀 **90% less code** - Only ~5K tokens of Lua
+- 🔄 **Always up-to-date** - `npm update @continuedev/cli` gets latest features
+- 🎯 **Same behavior** - Identical to Continue CLI (no divergence)
+- 🛠️ **All features** - Agent, Chat, Tools, MCP - everything Continue offers
 
-## Features (Planned)
+## Features
 
-- [x] Basic plugin structure
-- [ ] Chat interface with LLM integration
-- [ ] Inline code editing
-- [ ] AI-powered autocomplete
-- [ ] Agent task automation
-- [ ] Support for multiple AI providers (OpenAI, Anthropic, Ollama)
-- [ ] Context-aware code understanding
-- [ ] Streaming responses
+### Implemented ✅
+
+- [x] **HTTP Client** - curl-based async requests with timeout handling
+- [x] **Process Manager** - Auto-start/stop `cn serve` with port scanning
+- [x] **State Polling** - Real-time chat state updates (500ms interval)
+- [x] **Chat UI** - Floating window with message rendering
+- [x] **Message Formatting** - User/Assistant/System/Tool messages
+- [x] **Streaming Support** - Character-by-character updates
+- [x] **Permission System** - Interactive tool approval prompts
+- [x] **Commands** - :Continue, :ContinueStart, :ContinueStop, :ContinuePause
+- [x] **Health Check** - :ContinueHealth for dependency verification
+- [x] **Git Integration** - :ContinueDiff for repository diffs
+- [x] **State Diffing** - Efficient UI updates (only render changes)
+
+### In Progress 🚧
+
+- [ ] Syntax highlighting for code blocks in chat
+- [ ] Input area for typing messages in chat window
+- [ ] Dynamic polling intervals (adaptive based on activity)
+- [ ] Request retry logic for transient failures
+
+### Future Enhancements 📋
+
+- [ ] vim.loop TCP client (zero curl dependency)
+- [ ] Message actions (copy, retry, edit)
+- [ ] Visual feedback for processing state
+- [ ] Plenary.nvim test suite for CI/CD
 
 ## Installation
 
-**Note**: This plugin is not yet functional. These are planned installation instructions.
+### Prerequisites
 
-### Using [lazy.nvim](https://github.com/folke/lazy.nvim)
+- **Neovim 0.10+** (for `vim.json` built-in)
+- **Node.js 18+** (for Continue CLI)
+- **curl** (for HTTP requests)
+
+### Step 1: Install Continue CLI
+
+```bash
+npm install -g @continuedev/cli
+```
+
+### Step 1.5: First-time Setup
+
+```bash
+cn init
+```
+
+### Step 2: Install Plugin
+
+Using [lazy.nvim](https://github.com/folke/lazy.nvim):
 
 ```lua
 {
-  'your-username/continue.nvim',
+  'continue.nvim',
+  dev = true,  -- For local development
   config = function()
-    require('continue-nvim').setup({
-      provider = {
-        name = 'openai',  -- or 'anthropic', 'ollama'
-        api_key = os.getenv('OPENAI_API_KEY'),
-        model = 'gpt-4',
-      },
+    require('continue').setup({
+      port = 8000,              -- Default port for cn serve
+      port_range = { 8000, 8010 }, -- Auto-find available port
+      timeout = 300,            -- Server timeout (seconds)
+      auto_start = true,        -- Start cn serve automatically
+      auto_find_port = true,    -- Find available port automatically
+      cn_bin = 'cn',            -- Path to cn binary
+      continue_config = nil,    -- Path to Continue config (optional)
     })
   end,
 }
 ```
 
-### Using [packer.nvim](https://github.com/wbthomason/packer.nvim)
+Using [packer.nvim](https://github.com/wbthomason/packer.nvim):
 
 ```lua
 use {
-  'your-username/continue.nvim',
+  'continue.nvim',
   config = function()
-    require('continue-nvim').setup()
+    require('continue').setup()
   end
 }
 ```
 
 ## Configuration
 
+All configuration options with defaults:
+
 ```lua
-require('continue-nvim').setup({
-  -- AI Provider settings
-  provider = {
-    name = 'openai',     -- 'openai', 'anthropic', 'ollama'
-    api_key = nil,       -- Or set via OPENAI_API_KEY env var
-    model = 'gpt-4',     -- Model to use
-    api_url = nil,       -- Custom API endpoint (optional)
-  },
-
-  -- Enable/disable features
-  features = {
-    chat = true,
-    edit = true,
-    autocomplete = true,
-    agent = true,
-  },
-
-  -- UI settings
-  ui = {
-    float_border = 'rounded',
-    float_width = 0.8,
-    float_height = 0.8,
-  },
-
-  -- Keybindings (disabled by default)
-  keymaps = {
-    enabled = false,
-    chat = '<leader>cc',
-    edit = '<leader>ce',
-    agent = '<leader>ca',
-  },
+require('continue').setup({
+  port = 8000,              -- Default port for cn serve
+  port_range = { 8000, 8010 }, -- Range for auto port finding
+  timeout = 300,            -- Server auto-shutdown timeout (seconds)
+  auto_start = true,        -- Auto-start cn serve on plugin load
+  auto_find_port = true,    -- Automatically find available port
+  cn_bin = 'cn',            -- Path to cn CLI binary
+  continue_config = nil,    -- Custom Continue config path (optional)
 })
 ```
 
+**Note**: AI provider configuration (API keys, models) is handled by Continue CLI, not this plugin. Configure via `~/.continue/config.json` or environment variables. See [Continue docs](https://docs.continue.dev).
+
 ## Usage
+
+### Quick Start
+
+```vim
+" Open chat window
+:Continue
+
+" Send a message directly
+:Continue How do I implement a binary search in Rust?
+
+" Check health status
+:ContinueHealth
+```
 
 ### Commands
 
-- `:ContinueChat [message]` - Open chat interface
-- `:ContinueEdit` - Start inline edit mode
-- `:ContinueAgent [task]` - Start agent for task automation
-- `:ContinueConfig` - Show current configuration
+| Command | Description |
+|---------|-------------|
+| `:Continue [message]` | Open chat or send message directly |
+| `:ContinueStart` | Manually start `cn serve` (if auto_start is false) |
+| `:ContinueStop` | Stop server and polling |
+| `:ContinuePause` | Interrupt current agent execution (like Ctrl+C) |
+| `:ContinueStatus` | Show server and client status |
+| `:ContinueDiff` | Show git diff in split window |
+| `:ContinueHealth` | Run health check (dependencies + server) |
 
-### Default Keybindings (when enabled)
+### Keymaps (in Chat Window)
 
-- `<leader>cc` - Open Continue chat
-- `<leader>ce` - Start Continue edit
-- `<leader>ca` - Start Continue agent
+| Key | Action |
+|-----|--------|
+| `q` or `<Esc>` | Close chat window |
 
-## Development Status
+## Testing
 
-This is an early-stage port of the Continue VSCode extension to Neovim. Current progress:
+### Manual Testing
 
-- ✅ Plugin structure and basic setup
-- ✅ Configuration system
-- ✅ Command registration
-- 🚧 LLM integration
-- 🚧 Chat interface
-- 🚧 Inline editing
-- 🚧 Autocomplete
-- 🚧 Agent functionality
+Start Continue server:
 
-See [docs/PORTING_CHECKLIST.md](docs/PORTING_CHECKLIST.md) for detailed progress.
+```bash
+cn serve --port 8000
+```
+
+Run integration tests in Neovim:
+
+```vim
+:luafile tests/test_http_client.lua
+```
+
+### Health Check
+
+```vim
+:ContinueHealth
+```
+
+Example output:
+
+```
+=== Continue.nvim Health Check ===
+
+✓ Neovim version: 0.10 (OK)
+✓ Node.js: v20.11.0
+✓ Continue CLI: 0.1.0 (/usr/local/bin/cn)
+✓ curl: available
+
+✓ Server: running on port 8000
+✓ Server health: OK
+```
 
 ## Architecture
 
-Continue.nvim follows a modular architecture:
+```
+┌─────────────────────────────────┐
+│         Neovim                  │
+│  ┌──────────────────────────┐   │
+│  │  continue.nvim           │   │
+│  │  (Lua - ~8K tokens)      │   │
+│  │                          │   │  HTTP/JSON
+│  │  • HTTP client           │───┼────────┐
+│  │  • State polling         │   │        │
+│  │  • UI rendering          │   │        │
+│  │  • Commands              │   │        │
+│  └──────────────────────────┘   │        │
+└─────────────────────────────────┘        │
+                                           ▼
+                                     ┌─────────────────┐
+                                     │   cn serve      │
+                                     │  (Node.js/TS)   │
+                                     │                 │
+                                     │  • Agent logic  │
+                                     │  • LLM APIs     │
+                                     │  • Tools/MCP    │
+                                     │  • All Continue │
+                                     │    features     │
+                                     └─────────────────┘
+```
+
+### Project Structure
 
 ```
-lua/continue-nvim/
-├── init.lua              # Main entry point
-├── config/               # Configuration
-├── chat/                 # Chat interface
-├── edit/                 # Inline editing
-├── autocomplete/         # AI completions
-├── agent/                # Task automation
-├── ui/                   # UI components
-└── utils/                # Utilities (LLM client, async)
+lua/continue/
+├── init.lua          # Entry point & setup()
+├── client.lua        # HTTP client (endpoints, polling)
+├── process.lua       # cn serve lifecycle management
+├── commands.lua      # User commands (:Continue, etc.)
+├── ui/
+│   └── chat.lua      # Chat window & message rendering
+└── utils/
+    ├── http.lua      # curl wrapper (async HTTP)
+    └── json.lua      # vim.json wrapper
+
+tests/
+└── test_http_client.lua  # Integration tests
 ```
 
-## Requirements
+### HTTP Protocol
 
-- Neovim >= 0.8.0
-- curl (for HTTP requests to AI providers)
-- Optional: [plenary.nvim](https://github.com/nvim-lua/plenary.nvim) for async operations
+The plugin communicates with `cn serve` via REST API:
+
+- `GET /state` - Poll for chat state (every 500ms)
+- `POST /message` - Send user message
+- `POST /permission` - Approve/reject tool execution
+- `POST /pause` - Interrupt agent
+- `GET /diff` - Get git diff
+- `POST /exit` - Graceful shutdown
+
+See [source/extensions/cli/spec/wire-format.md](source/extensions/cli/spec/wire-format.md) for full protocol spec.
 
 ## Contributing
 
