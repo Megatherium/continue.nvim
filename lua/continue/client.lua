@@ -7,7 +7,13 @@ local state = {
   polling = false,
   last_state = nil,
   port = nil,
+  poll_interval = 500,  -- Current polling interval in ms
 }
+
+-- Polling interval constants
+local POLL_INTERVAL_ACTIVE = 100  -- 100ms when processing (responsive)
+local POLL_INTERVAL_IDLE = 1000   -- 1s when idle (efficient)
+local POLL_INTERVAL_DEFAULT = 500 -- 500ms default
 
 -- Start polling the server for state updates
 -- @param port number - Port number where cn serve is running
@@ -47,13 +53,23 @@ function M.start_polling(port, callback)
         callback(server_state)
       end
 
+      -- Dynamic interval adjustment based on activity
+      local new_interval = M.calculate_poll_interval(server_state)
+      if new_interval ~= state.poll_interval then
+        state.poll_interval = new_interval
+        -- Restart timer with new interval
+        if state.timer then
+          state.timer:stop()
+          state.timer:start(0, new_interval, vim.schedule_wrap(poll))
+        end
+      end
+
       state.last_state = server_state
     end)
   end
 
-  -- Start polling at 500ms intervals
-  -- TODO: Implement dynamic polling interval based on activity
-  state.timer:start(0, 500, vim.schedule_wrap(poll))
+  -- Start polling at dynamic intervals
+  state.timer:start(0, POLL_INTERVAL_DEFAULT, vim.schedule_wrap(poll))
 
   vim.notify('Started polling Continue server on port ' .. port, vim.log.levels.INFO)
 end
@@ -232,10 +248,41 @@ function M.status()
     polling = state.polling,
     port = state.port,
     has_state = state.last_state ~= nil,
+    poll_interval = state.poll_interval,
   }
 end
 
--- TODO: Add dynamic polling interval (100ms when active, 1000ms when idle)
+-- Calculate optimal polling interval based on server activity
+-- @param server_state table - Current server state
+-- @return number - Interval in milliseconds
+function M.calculate_poll_interval(server_state)
+  if not server_state then
+    return POLL_INTERVAL_DEFAULT
+  end
+  
+  -- Fast polling when actively processing
+  if server_state.isProcessing then
+    return POLL_INTERVAL_ACTIVE
+  end
+  
+  -- Fast polling when messages in queue
+  if server_state.messageQueueLength and server_state.messageQueueLength > 0 then
+    return POLL_INTERVAL_ACTIVE
+  end
+  
+  -- Fast polling when there's a streaming message
+  if server_state.chatHistory and #server_state.chatHistory > 0 then
+    local last_msg = server_state.chatHistory[#server_state.chatHistory]
+    if last_msg.isStreaming then
+      return POLL_INTERVAL_ACTIVE
+    end
+  end
+  
+  -- Slow polling when idle
+  return POLL_INTERVAL_IDLE
+end
+
+-- IMPLEMENTATION SUBSTEPS for future enhancements:
 -- TODO: Add request queue for rate limiting
 -- TODO: Add connection recovery logic
 

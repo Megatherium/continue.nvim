@@ -6,73 +6,129 @@
 -- - Default timeout: 5 seconds via curl --max-time
 -- - Supports job abortion via returned job_id
 -- - Callbacks always called via vim.schedule for safety
+-- - Automatic retry for transient failures
 
 local M = {}
 
 -- Default timeout in seconds
 local DEFAULT_TIMEOUT = 5
 
+-- Retry configuration
+local MAX_RETRIES = 2
+local RETRY_DELAY_MS = 500  -- 500ms between retries
+
+-- Detect if error is retryable
+-- @param err string - Error message
+-- @return boolean - True if error is transient
+local function is_retryable_error(err)
+  if not err then
+    return false
+  end
+  
+  local retryable_patterns = {
+    'Connection refused',
+    'Connection reset',
+    'Connection timeout',
+    'Could not resolve host',
+    'Failed to connect',
+    'timeout',
+    'Timeout',
+  }
+  
+  for _, pattern in ipairs(retryable_patterns) do
+    if err:match(pattern) then
+      return true
+    end
+  end
+  
+  return false
+end
+
 -- Simple GET request using curl
 -- @param url string - Full URL (e.g., "http://localhost:8000/state")
 -- @param callback function(err, response) - Called with result
--- @param opts table|nil - Optional {timeout: number (seconds)}
+-- @param opts table|nil - Optional {timeout: number (seconds), retry: number (max retries)}
 -- @return number - Job ID (can be used with vim.fn.jobstop to cancel)
 function M.get(url, callback, opts)
   opts = opts or {}
-  local timeout = opts.timeout or DEFAULT_TIMEOUT
-  local cmd = string.format(
-    'curl -s -w "\\n%%{http_code}" --max-time %d --connect-timeout %d "%s"',
-    timeout,
-    timeout,
-    url
-  )
+  local max_retries = opts.retry or MAX_RETRIES
+  local attempt = 0
+  
+  local function try_request()
+    attempt = attempt + 1
+    
+    local timeout = opts.timeout or DEFAULT_TIMEOUT
+    local cmd = string.format(
+      'curl -s -w "\\n%%{http_code}" --max-time %d --connect-timeout %d "%s"',
+      timeout,
+      timeout,
+      url
+    )
 
-  return vim.fn.jobstart(cmd, {
-    stdout_buffered = true,
-    on_stdout = function(_, data)
-      if not data or #data == 0 then
-        vim.schedule(function()
-          callback('Empty response', nil)
-        end)
-        return
-      end
-
-      -- Last line is HTTP status code (from -w)
-      local status_code = tonumber(data[#data])
-      local body_lines = {}
-      for i = 1, #data - 1 do
-        if data[i] ~= '' then
-          table.insert(body_lines, data[i])
-        end
-      end
-      local body = table.concat(body_lines, '\n')
-
-      vim.schedule(function()
-        if status_code and status_code >= 200 and status_code < 300 then
-          callback(nil, { status = status_code, body = body })
-        else
-          callback(string.format('HTTP %s', status_code or 'error'), nil)
-        end
-      end)
-    end,
-    on_stderr = function(_, data)
-      if data and #data > 0 then
-        local err_msg = table.concat(data, '\n')
-        if err_msg ~= '' then
+    return vim.fn.jobstart(cmd, {
+      stdout_buffered = true,
+      on_stdout = function(_, data)
+        if not data or #data == 0 then
           vim.schedule(function()
-            callback('curl error: ' .. err_msg, nil)
+            callback('Empty response', nil)
+          end)
+          return
+        end
+
+        -- Last line is HTTP status code (from -w)
+        local status_code = tonumber(data[#data])
+        local body_lines = {}
+        for i = 1, #data - 1 do
+          if data[i] ~= '' then
+            table.insert(body_lines, data[i])
+          end
+        end
+        local body = table.concat(body_lines, '\n')
+
+        vim.schedule(function()
+          if status_code and status_code >= 200 and status_code < 300 then
+            callback(nil, { status = status_code, body = body })
+          else
+            callback(string.format('HTTP %s', status_code or 'error'), nil)
+          end
+        end)
+      end,
+      on_stderr = function(_, data)
+        if data and #data > 0 then
+          local err_msg = table.concat(data, '\n')
+          if err_msg ~= '' then
+            vim.schedule(function()
+              -- Check if we should retry
+              if is_retryable_error(err_msg) and attempt < max_retries then
+                vim.notify(string.format('Request failed (attempt %d/%d), retrying...', 
+                  attempt, max_retries), vim.log.levels.WARN)
+                vim.defer_fn(try_request, RETRY_DELAY_MS)
+              else
+                callback('curl error: ' .. err_msg, nil)
+              end
+            end)
+          end
+        end
+      end,
+      on_exit = function(_, code)
+        if code ~= 0 then
+          vim.schedule(function()
+            local err_msg = string.format('curl exited with code %d', code)
+            -- Check if we should retry
+            if is_retryable_error(err_msg) and attempt < max_retries then
+              vim.notify(string.format('Request failed (attempt %d/%d), retrying...', 
+                attempt, max_retries), vim.log.levels.WARN)
+              vim.defer_fn(try_request, RETRY_DELAY_MS)
+            else
+              callback(err_msg, nil)
+            end
           end)
         end
-      end
-    end,
-    on_exit = function(_, code)
-      if code ~= 0 then
-        vim.schedule(function()
-          callback(string.format('curl exited with code %d', code), nil)
-        end)
-      end
-    end,
-  })
+      end,
+    })
+  end
+  
+  return try_request()
 end
 
 -- Simple POST request using curl

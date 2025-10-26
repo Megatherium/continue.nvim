@@ -92,6 +92,7 @@ function M.open()
       'Waiting for messages...',
       '',
       'Type a message below and press <CR> to send',
+      'Press ? for keyboard shortcuts',
       'Press q or <Esc> to close',
     })
     vim.api.nvim_buf_set_option(state.bufnr, 'modifiable', false)
@@ -123,6 +124,21 @@ function M.setup_keymaps(bufnr)
   vim.keymap.set('n', '<Esc>', function()
     M.close()
   end, { buffer = bufnr, desc = 'Close Continue chat' })
+  
+  -- Copy current message to clipboard (yank)
+  vim.keymap.set('n', 'yy', function()
+    M.copy_current_message()
+  end, { buffer = bufnr, desc = 'Copy current message' })
+  
+  -- Copy all chat history
+  vim.keymap.set('n', 'yA', function()
+    M.copy_all_messages()
+  end, { buffer = bufnr, desc = 'Copy all messages' })
+  
+  -- Show help
+  vim.keymap.set('n', '?', function()
+    M.show_help()
+  end, { buffer = bufnr, desc = 'Show keyboard shortcuts' })
 end
 
 -- Setup input buffer keymaps
@@ -345,11 +361,13 @@ end
 -- IMPLEMENTATION SUBSTEPS:
 -- 1. Make buffer modifiable
 -- 2. Clear buffer
--- 3. Format each message
--- 4. Add separator between messages
--- 5. Write lines to buffer
--- 6. Make buffer non-modifiable
--- 7. Auto-scroll to bottom
+-- 3. Add status header (processing indicator)
+-- 4. Format each message
+-- 5. Add separator between messages
+-- 6. Write lines to buffer
+-- 7. Apply syntax highlighting to code blocks
+-- 8. Make buffer non-modifiable
+-- 9. Auto-scroll to bottom
 function M.render_full_history(history)
   if not state.bufnr or not vim.api.nvim_buf_is_valid(state.bufnr) then
     return
@@ -361,8 +379,30 @@ function M.render_full_history(history)
   -- Substep 2: Clear buffer
   vim.api.nvim_buf_set_lines(state.bufnr, 0, -1, false, {})
 
-  -- Substep 3-4: Format messages with separators
+  -- Substep 3: Add status header
   local all_lines = {}
+  if state.last_state then
+    local status_line = '╔══════════════════════════════════════════════════════════╗'
+    local title = '║                  Continue.nvim Chat                      ║'
+    local bottom = '╚══════════════════════════════════════════════════════════╝'
+    
+    local status_info = ''
+    if state.last_state.isProcessing then
+      status_info = '⏳ Processing...'
+    elseif state.last_state.messageQueueLength and state.last_state.messageQueueLength > 0 then
+      status_info = string.format('📥 Queue: %d message(s)', state.last_state.messageQueueLength)
+    else
+      status_info = '✅ Ready'
+    end
+    
+    table.insert(all_lines, status_line)
+    table.insert(all_lines, title)
+    table.insert(all_lines, '║  ' .. status_info .. string.rep(' ', 56 - #status_info) .. '║')
+    table.insert(all_lines, bottom)
+    table.insert(all_lines, '')
+  end
+
+  -- Substep 4-5: Format messages with separators
   for i, msg in ipairs(history) do
     local msg_lines = M.format_message(msg)
     for _, line in ipairs(msg_lines) do
@@ -377,15 +417,137 @@ function M.render_full_history(history)
     end
   end
 
-  -- Substep 5: Write to buffer
+  -- Substep 6: Write to buffer
   vim.api.nvim_buf_set_lines(state.bufnr, 0, -1, false, all_lines)
 
-  -- Substep 6: Make non-modifiable
+  -- Substep 7: Apply syntax highlighting
+  M.apply_syntax_highlighting(state.bufnr, all_lines)
+
+  -- Substep 8: Make non-modifiable
   vim.api.nvim_buf_set_option(state.bufnr, 'modifiable', false)
 
-  -- Substep 7: Auto-scroll to bottom if window is visible
+  -- Substep 9: Auto-scroll to bottom if window is visible
   if state.winnr and vim.api.nvim_win_is_valid(state.winnr) then
     vim.api.nvim_win_set_cursor(state.winnr, { #all_lines, 0 })
+  end
+end
+
+-- Apply syntax highlighting to code blocks
+-- @param bufnr number - Buffer number
+-- @param lines string[] - All buffer lines
+function M.apply_syntax_highlighting(bufnr, lines)
+  -- Clear existing highlights
+  vim.api.nvim_buf_clear_namespace(bufnr, -1, 0, -1)
+  
+  local ns_id = vim.api.nvim_create_namespace('continue_code_blocks')
+  local in_code_block = false
+  local code_start_line = nil
+  local language = nil
+  
+  for line_num, line in ipairs(lines) do
+    -- Detect code fence start
+    local fence_start = line:match('^```(%w*)')
+    if fence_start and not in_code_block then
+      in_code_block = true
+      code_start_line = line_num
+      language = fence_start ~= '' and fence_start or 'text'
+      
+      -- Highlight fence line
+      vim.api.nvim_buf_add_highlight(bufnr, ns_id, 'Comment', line_num - 1, 0, -1)
+    
+    -- Detect code fence end
+    elseif line:match('^```$') and in_code_block then
+      in_code_block = false
+      
+      -- Highlight fence line
+      vim.api.nvim_buf_add_highlight(bufnr, ns_id, 'Comment', line_num - 1, 0, -1)
+      
+      -- Highlight code block region with subtle background
+      if code_start_line then
+        for i = code_start_line, line_num - 2 do
+          vim.api.nvim_buf_add_highlight(bufnr, ns_id, 'CursorLine', i, 0, -1)
+        end
+      end
+      
+      code_start_line = nil
+      language = nil
+    
+    -- Inside code block - apply basic highlighting
+    elseif in_code_block and code_start_line then
+      -- Basic syntax highlighting by language
+      M.apply_inline_syntax(bufnr, ns_id, line_num - 1, line, language)
+    end
+  end
+end
+
+-- Apply inline syntax highlighting for common languages
+-- @param bufnr number - Buffer number
+-- @param ns_id number - Namespace ID
+-- @param line_num number - Line number (0-indexed)
+-- @param line string - Line content
+-- @param language string - Programming language
+function M.apply_inline_syntax(bufnr, ns_id, line_num, line, language)
+  -- Highlight strings
+  for str_match in line:gmatch([["[^"]*"]]) do
+    local start_col = line:find(str_match, 1, true)
+    if start_col then
+      vim.api.nvim_buf_add_highlight(bufnr, ns_id, 'String', line_num, start_col - 1, start_col + #str_match - 1)
+    end
+  end
+  
+  -- Highlight single-quoted strings
+  for str_match in line:gmatch([['[^']*']]) do
+    local start_col = line:find(str_match, 1, true)
+    if start_col then
+      vim.api.nvim_buf_add_highlight(bufnr, ns_id, 'String', line_num, start_col - 1, start_col + #str_match - 1)
+    end
+  end
+  
+  -- Highlight comments (common patterns)
+  local comment_patterns = {
+    '//.*',      -- C-style
+    '#.*',       -- Python/Shell
+    '%-%-.*',    -- Lua/SQL
+    '/\\*.*\\*/', -- Multi-line C-style
+  }
+  
+  for _, pattern in ipairs(comment_patterns) do
+    local comment_start = line:match(pattern)
+    if comment_start then
+      local start_col = line:find(comment_start, 1, true)
+      if start_col then
+        vim.api.nvim_buf_add_highlight(bufnr, ns_id, 'Comment', line_num, start_col - 1, -1)
+        break
+      end
+    end
+  end
+  
+  -- Highlight keywords for common languages
+  local keywords = {
+    lua = { 'function', 'local', 'return', 'if', 'then', 'else', 'end', 'for', 'while', 'do' },
+    python = { 'def', 'class', 'return', 'if', 'elif', 'else', 'for', 'while', 'import', 'from' },
+    javascript = { 'function', 'const', 'let', 'var', 'return', 'if', 'else', 'for', 'while', 'import' },
+    rust = { 'fn', 'let', 'mut', 'return', 'if', 'else', 'for', 'while', 'impl', 'struct' },
+    go = { 'func', 'var', 'return', 'if', 'else', 'for', 'range', 'struct', 'interface' },
+  }
+  
+  local lang_keywords = keywords[language:lower()] or {}
+  for _, keyword in ipairs(lang_keywords) do
+    local pattern = '%f[%w]' .. keyword .. '%f[%W]'
+    for match in line:gmatch(pattern) do
+      local start_col = line:find(match, 1, true)
+      if start_col then
+        vim.api.nvim_buf_add_highlight(bufnr, ns_id, 'Keyword', line_num, start_col - 1, start_col + #match - 1)
+      end
+    end
+  end
+  
+  -- Highlight numbers
+  for num_match in line:gmatch('%d+%.?%d*') do
+    local start_col = line:find(num_match, 1, true)
+    if start_col then
+      vim.api.nvim_buf_add_highlight(bufnr, ns_id, 'Number', line_num, start_col - 1, start_col + #num_match - 1)
+    end
   end
 end
 
@@ -411,6 +573,131 @@ function M.show_permission_prompt(permission)
       state.last_permission = nil
     end
   end)
+end
+
+-- Copy current message under cursor to clipboard
+function M.copy_current_message()
+  if not state.bufnr or not vim.api.nvim_buf_is_valid(state.bufnr) then
+    return
+  end
+  
+  if not state.last_state or not state.last_state.chatHistory then
+    vim.notify('No messages to copy', vim.log.levels.WARN)
+    return
+  end
+  
+  local cursor_line = vim.api.nvim_win_get_cursor(0)[1]
+  local all_lines = vim.api.nvim_buf_get_lines(state.bufnr, 0, -1, false)
+  
+  -- Find which message the cursor is in
+  local current_line = 1
+  for i, msg in ipairs(state.last_state.chatHistory) do
+    local msg_lines = M.format_message(msg)
+    local msg_end = current_line + #msg_lines
+    
+    if cursor_line >= current_line and cursor_line < msg_end then
+      -- Found the message - copy just the content without role prefix
+      local content = msg.content or ''
+      vim.fn.setreg('+', content)
+      vim.notify(string.format('Copied message %d to clipboard (%d chars)', i, #content), vim.log.levels.INFO)
+      return
+    end
+    
+    -- Move past message + separator
+    current_line = msg_end + 3  -- +3 for blank line, separator, blank line
+  end
+  
+  vim.notify('Cursor not on a message', vim.log.levels.WARN)
+end
+
+-- Copy all messages to clipboard
+function M.copy_all_messages()
+  if not state.last_state or not state.last_state.chatHistory then
+    vim.notify('No messages to copy', vim.log.levels.WARN)
+    return
+  end
+  
+  local lines = {}
+  for i, msg in ipairs(state.last_state.chatHistory) do
+    local role = msg.role or 'unknown'
+    local content = msg.content or ''
+    
+    table.insert(lines, string.format('[%s]: %s', role:upper(), content))
+    
+    if i < #state.last_state.chatHistory then
+      table.insert(lines, '')
+      table.insert(lines, string.rep('-', 60))
+      table.insert(lines, '')
+    end
+  end
+  
+  local text = table.concat(lines, '\n')
+  vim.fn.setreg('+', text)
+  vim.notify(string.format('Copied %d messages to clipboard (%d chars)', 
+    #state.last_state.chatHistory, #text), vim.log.levels.INFO)
+end
+
+-- Show keyboard shortcuts help
+function M.show_help()
+  local help_lines = {
+    '╔══════════════════════════════════════════════════════════╗',
+    '║           Continue.nvim Keyboard Shortcuts              ║',
+    '╚══════════════════════════════════════════════════════════╝',
+    '',
+    'CHAT WINDOW (top pane):',
+    '  q or <Esc>  - Close chat window',
+    '  yy          - Copy current message to clipboard',
+    '  yA          - Copy all messages to clipboard',
+    '  ?           - Show this help',
+    '',
+    'INPUT AREA (bottom pane):',
+    '  i or a      - Enter insert mode to type',
+    '  <CR>        - Send message (insert or normal mode)',
+    '  <Esc>       - Exit insert mode / close window',
+    '  q           - Close window (normal mode)',
+    '',
+    'COMMANDS:',
+    '  :Continue [msg]   - Open chat or send message',
+    '  :ContinueStart    - Start cn serve',
+    '  :ContinueStop     - Stop cn serve',
+    '  :ContinuePause    - Interrupt agent',
+    '  :ContinueStatus   - Show status',
+    '  :ContinueDiff     - Show git diff',
+    '  :ContinueHealth   - Health check',
+    '',
+    'Press any key to close this help...',
+  }
+  
+  -- Create temporary floating window for help
+  local buf = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, help_lines)
+  vim.api.nvim_buf_set_option(buf, 'modifiable', false)
+  vim.api.nvim_buf_set_option(buf, 'buftype', 'nofile')
+  
+  local width = 62
+  local height = #help_lines
+  local win = vim.api.nvim_open_win(buf, true, {
+    relative = 'editor',
+    width = width,
+    height = height,
+    row = math.floor((vim.o.lines - height) / 2),
+    col = math.floor((vim.o.columns - width) / 2),
+    style = 'minimal',
+    border = 'rounded',
+  })
+  
+  -- Close on any key
+  vim.keymap.set('n', '<CR>', function()
+    vim.api.nvim_win_close(win, true)
+  end, { buffer = buf })
+  
+  vim.keymap.set('n', 'q', function()
+    vim.api.nvim_win_close(win, true)
+  end, { buffer = buf })
+  
+  vim.keymap.set('n', '<Esc>', function()
+    vim.api.nvim_win_close(win, true)
+  end, { buffer = buf })
 end
 
 -- IMPLEMENTATION SUBSTEPS for future enhancements:
