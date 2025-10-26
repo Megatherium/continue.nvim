@@ -174,6 +174,79 @@ function M.setup(user_config, dependency_checker)
     vim.notify(table.concat(health_results, '\n'), vim.log.levels.INFO)
   end, { desc = 'Check Continue.nvim health' })
 
+  -- :ContinueExport - Export chat to markdown
+  vim.api.nvim_create_user_command('ContinueExport', function(opts)
+    local client = require('continue.client')
+    local export = require('continue.export')
+    local status = client.status()
+    
+    if not status.has_state then
+      vim.notify('No chat history to export', vim.log.levels.WARN)
+      return
+    end
+    
+    -- Get chat history from client state
+    local process = require('continue.process')
+    local proc_status = process.status()
+    
+    if not proc_status.running then
+      vim.notify('Server not running - no history available', vim.log.levels.WARN)
+      return
+    end
+    
+    -- Fetch current state to export
+    local http = require('continue.utils.http')
+    http.get(string.format('http://localhost:%d/state', proc_status.port), function(err, response)
+      if err then
+        vim.notify('Failed to fetch state: ' .. err, vim.log.levels.ERROR)
+        return
+      end
+      
+      local ok, server_state = pcall(vim.json.decode, response.body)
+      if not ok or not server_state.chatHistory then
+        vim.notify('Failed to parse chat history', vim.log.levels.ERROR)
+        return
+      end
+      
+      -- Determine output path
+      local filepath
+      if opts.args and opts.args ~= '' then
+        filepath = opts.args
+      else
+        -- Auto-generate filename
+        local auto_path, err = export.auto_export(server_state.chatHistory)
+        if not auto_path then
+          vim.notify('Export failed: ' .. (err or 'unknown error'), vim.log.levels.ERROR)
+          return
+        end
+        filepath = auto_path
+      end
+      
+      -- Export to file
+      local success, export_err = export.to_file(server_state.chatHistory, filepath)
+      if not success then
+        vim.notify('Export failed: ' .. (export_err or 'unknown error'), vim.log.levels.ERROR)
+        return
+      end
+      
+      vim.notify(string.format('Exported %d messages to: %s', 
+        #server_state.chatHistory, filepath), vim.log.levels.INFO)
+      
+      -- Offer to open the file
+      vim.ui.select({'Yes', 'No'}, {
+        prompt = 'Open exported file?'
+      }, function(choice)
+        if choice == 'Yes' then
+          vim.cmd('edit ' .. vim.fn.fnameescape(filepath))
+        end
+      end)
+    end)
+  end, { 
+    nargs = '?', 
+    desc = 'Export chat history to markdown',
+    complete = 'file'
+  })
+
   -- TODO: :ContinueLog - Show logs (if we add logging to file)
 end
 

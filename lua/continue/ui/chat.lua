@@ -82,20 +82,46 @@ function M.open()
   if state.last_state and state.last_state.chatHistory then
     M.render_full_history(state.last_state.chatHistory)
   else
-    -- Show welcome message
+    -- Show welcome message with ASCII art
     vim.api.nvim_buf_set_option(state.bufnr, 'modifiable', true)
     vim.api.nvim_buf_set_lines(state.bufnr, 0, -1, false, {
-      '╔══════════════════════════════════════════════════════════╗',
-      '║                  Continue.nvim Chat                      ║',
-      '╚══════════════════════════════════════════════════════════╝',
       '',
-      'Waiting for messages...',
+      '     ██████╗ ██████╗ ███╗   ██╗████████╗██╗███╗   ██╗██╗   ██╗███████╗',
+      '    ██╔════╝██╔═══██╗████╗  ██║╚══██╔══╝██║████╗  ██║██║   ██║██╔════╝',
+      '    ██║     ██║   ██║██╔██╗ ██║   ██║   ██║██╔██╗ ██║██║   ██║█████╗  ',
+      '    ██║     ██║   ██║██║╚██╗██║   ██║   ██║██║╚██╗██║██║   ██║██╔══╝  ',
+      '    ╚██████╗╚██████╔╝██║ ╚████║   ██║   ██║██║ ╚████║╚██████╔╝███████╗',
+      '     ╚═════╝ ╚═════╝ ╚═╝  ╚═══╝   ╚═╝   ╚═╝╚═╝  ╚═══╝ ╚═════╝ ╚══════╝',
       '',
-      'Type a message below and press <CR> to send',
-      'Press ? for keyboard shortcuts',
-      'Press q or <Esc> to close',
+      '    ╭───────────────────────────────────────────────────────────╮',
+      '    │  AI-Powered Code Assistant for Neovim                    │',
+      '    ╰───────────────────────────────────────────────────────────╯',
+      '',
+      '    Ready to assist! Start typing below to send a message.',
+      '',
+      '    ⌨️  Keyboard Shortcuts:',
+      '       • Press ? for full help',
+      '       • Press yy to copy message',
+      '       • Press q or <Esc> to close',
+      '',
+      '    🚀 Quick Start:',
+      '       • :Continue <message> - Send without opening',
+      '       • :ContinueExport - Save conversation to markdown',
+      '       • :ContinueHealth - Check system status',
+      '',
     })
     vim.api.nvim_buf_set_option(state.bufnr, 'modifiable', false)
+    
+    -- Apply welcome screen highlighting
+    local ns_id = vim.api.nvim_create_namespace('continue_welcome')
+    -- Highlight the ASCII art
+    for i = 1, 7 do
+      vim.api.nvim_buf_add_highlight(state.bufnr, ns_id, 'Title', i, 0, -1)
+    end
+    -- Highlight the subtitle box
+    vim.api.nvim_buf_add_highlight(state.bufnr, ns_id, 'Comment', 9, 0, -1)
+    vim.api.nvim_buf_add_highlight(state.bufnr, ns_id, 'String', 10, 0, -1)
+    vim.api.nvim_buf_add_highlight(state.bufnr, ns_id, 'Comment', 11, 0, -1)
   end
 end
 
@@ -664,6 +690,13 @@ function M.show_help()
     '  :ContinueStatus   - Show status',
     '  :ContinueDiff     - Show git diff',
     '  :ContinueHealth   - Health check',
+    '  :ContinueExport [file] - Export chat to markdown',
+    '',
+    'FEATURES:',
+    '  • Syntax highlighting for code blocks',
+    '  • Dynamic polling (100ms active, 1s idle)',
+    '  • Auto-retry for failed requests',
+    '  • Real-time status indicator',
     '',
     'Press any key to close this help...',
   }

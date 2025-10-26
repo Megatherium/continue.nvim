@@ -18,31 +18,40 @@ Instead of porting the entire Continue codebase (40-70K tokens of TypeScript), c
 
 ### Implemented ✅
 
+**Core Features:**
 - [x] **HTTP Client** - curl-based async requests with timeout handling
 - [x] **Process Manager** - Auto-start/stop `cn serve` with port scanning
-- [x] **State Polling** - Real-time chat state updates (500ms interval)
-- [x] **Chat UI** - Floating window with message rendering
+- [x] **State Polling** - Dynamic intervals (100ms active, 1s idle)
+- [x] **Chat UI** - Split window with input area (80% chat, 20% input)
 - [x] **Message Formatting** - User/Assistant/System/Tool messages
-- [x] **Streaming Support** - Character-by-character updates
+- [x] **Streaming Support** - Character-by-character real-time updates
 - [x] **Permission System** - Interactive tool approval prompts
-- [x] **Commands** - :Continue, :ContinueStart, :ContinueStop, :ContinuePause
-- [x] **Health Check** - :ContinueHealth for dependency verification
-- [x] **Git Integration** - :ContinueDiff for repository diffs
 - [x] **State Diffing** - Efficient UI updates (only render changes)
 
-### In Progress 🚧
+**Polish & UX:**
+- [x] **Syntax Highlighting** - Code blocks with language-aware highlighting
+- [x] **Message Copying** - yy (current), yA (all) to clipboard
+- [x] **Keyboard Help** - Press ? for interactive help
+- [x] **Processing Indicator** - Real-time status (⏳/📥/✅) in header
+- [x] **Request Retry** - Auto-retry transient failures (2x max)
+- [x] **Welcome Screen** - Beautiful ASCII art and quick start
 
-- [ ] Syntax highlighting for code blocks in chat
-- [ ] Input area for typing messages in chat window
-- [ ] Dynamic polling intervals (adaptive based on activity)
-- [ ] Request retry logic for transient failures
+**Commands:**
+- [x] `:Continue [msg]` - Open chat or send message
+- [x] `:ContinueStart/Stop` - Server management
+- [x] `:ContinuePause` - Interrupt agent
+- [x] `:ContinueStatus` - Show status
+- [x] `:ContinueDiff` - Show git diff
+- [x] `:ContinueHealth` - Dependency check
+- [x] `:ContinueExport [file]` - Export to markdown
 
 ### Future Enhancements 📋
 
 - [ ] vim.loop TCP client (zero curl dependency)
-- [ ] Message actions (copy, retry, edit)
-- [ ] Visual feedback for processing state
-- [ ] Plenary.nvim test suite for CI/CD
+- [ ] Session persistence (save/restore across restarts)
+- [ ] Message search (/ to search history)
+- [ ] Treesitter integration (perfect syntax highlighting)
+- [ ] Code actions (extract to file, run inline)
 
 ## Installation
 
