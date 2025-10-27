@@ -7,7 +7,7 @@ M.config = {
   port = 8000,
   port_range = { 8000, 8010 },
   timeout = 300, -- seconds
-  auto_start = true,
+  auto_start = false, -- DEPRECATED: server now starts lazily on first command
   auto_find_port = true,
   cn_bin = 'cn', -- path to cn binary
   continue_config = nil, -- path to Continue config (optional)
@@ -78,18 +78,23 @@ function M.setup(opts)
     return true
   end
 
-  -- Auto-start cn serve if configured
-  if M.config.auto_start then
-    -- Defer to avoid blocking startup
-    vim.defer_fn(function()
-      if ensure_dependencies() then
-        require('continue.process').start(M.config)
-      end
-    end, 100)
+  -- Lazy start helper: starts server if not running
+  -- @return boolean - true if server is running or was started successfully
+  local function ensure_started()
+    local process = require('continue.process')
+    local status = process.status()
+    
+    if status.running then
+      return true
+    end
+    
+    -- Start server on first use
+    vim.notify('Starting Continue server...', vim.log.levels.INFO)
+    return process.start(M.config)
   end
 
-  -- Register commands
-  require('continue.commands').setup(M.config, ensure_dependencies)
+  -- Register commands (pass lazy start helper)
+  require('continue.commands').setup(M.config, ensure_dependencies, ensure_started)
 
   -- Setup auto-cleanup on exit
   local augroup = vim.api.nvim_create_augroup('Continue', { clear = true })

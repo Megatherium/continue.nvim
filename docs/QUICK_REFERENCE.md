@@ -28,20 +28,15 @@ local M = {}
 M.config = {
   port = 8000,
   timeout = 300,  -- seconds
-  auto_start = true,
+  auto_start = false,  -- DEPRECATED: lazy loading on first command
 }
 
 function M.setup(opts)
   M.config = vim.tbl_deep_extend('force', M.config, opts or {})
 
-  -- Start cn serve if auto_start
-  if M.config.auto_start then
-    require('continue.process').start(M.config)
-    require('continue.client').start_polling(M.config.port)
-  end
-
-  -- Register commands
-  require('continue.commands').setup()
+  -- Server starts lazily when first Continue command is executed
+  -- No need to start on plugin load - improves startup time
+  require('continue.commands').setup(M.config, ensure_dependencies, ensure_started)
 end
 
 return M

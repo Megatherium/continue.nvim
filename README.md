@@ -86,7 +86,7 @@ Using [lazy.nvim](https://github.com/folke/lazy.nvim):
       port = 8000,              -- Default port for cn serve
       port_range = { 8000, 8010 }, -- Auto-find available port
       timeout = 300,            -- Server timeout (seconds)
-      auto_start = true,        -- Start cn serve automatically
+      auto_start = false,       -- DEPRECATED: server starts lazily on first command
       auto_find_port = true,    -- Find available port automatically
       cn_bin = 'cn',            -- Path to cn binary
       continue_config = nil,    -- Path to Continue config (optional)
@@ -115,7 +115,7 @@ require('continue').setup({
   port = 8000,              -- Default port for cn serve
   port_range = { 8000, 8010 }, -- Range for auto port finding
   timeout = 300,            -- Server auto-shutdown timeout (seconds)
-  auto_start = true,        -- Auto-start cn serve on plugin load
+  auto_start = false,       -- DEPRECATED: server now starts lazily on first command
   auto_find_port = true,    -- Automatically find available port
   cn_bin = 'cn',            -- Path to cn CLI binary
   continue_config = nil,    -- Custom Continue config path (optional)
@@ -143,8 +143,8 @@ require('continue').setup({
 
 | Command | Description |
 |---------|-------------|
-| `:Continue [message]` | Open chat or send message directly |
-| `:ContinueStart` | Manually start `cn serve` (if auto_start is false) |
+| `:Continue [message]` | Open chat or send message directly (auto-starts server) |
+| `:ContinueStart` | Manually start `cn serve` if needed |
 | `:ContinueStop` | Stop server and polling |
 | `:ContinuePause` | Interrupt current agent execution (like Ctrl+C) |
 | `:ContinueStatus` | Show server and client status |

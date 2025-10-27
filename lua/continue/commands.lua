@@ -4,14 +4,22 @@ local M = {}
 
 local config = nil
 local ensure_deps = nil
+local ensure_started = nil
 
-function M.setup(user_config, dependency_checker)
+function M.setup(user_config, dependency_checker, lazy_start_fn)
   config = user_config
   ensure_deps = dependency_checker
+  ensure_started = lazy_start_fn
 
   -- :Continue [message] - Open chat or send message
   vim.api.nvim_create_user_command('Continue', function(opts)
     if not ensure_deps() then
+      return
+    end
+
+    -- Lazy start server on first use
+    if not ensure_started() then
+      vim.notify('Failed to start Continue server', vim.log.levels.ERROR)
       return
     end
 
@@ -23,17 +31,7 @@ function M.setup(user_config, dependency_checker)
       local process = require('continue.process')
       local client = require('continue.client')
       local status = process.status()
-
-      if not status.running then
-        vim.notify('Starting Continue server...', vim.log.levels.INFO)
-        process.start(config)
-        -- Wait a bit for server to start before sending message
-        vim.defer_fn(function()
-          client.send_message(status.port or config.port, opts.args)
-        end, 2000)
-      else
-        client.send_message(status.port, opts.args)
-      end
+      client.send_message(status.port, opts.args)
     end
   end, {
     nargs = '*',
@@ -56,14 +54,14 @@ function M.setup(user_config, dependency_checker)
 
   -- :ContinuePause - Pause agent execution
   vim.api.nvim_create_user_command('ContinuePause', function()
+    if not ensure_started() then
+      vim.notify('Failed to start Continue server', vim.log.levels.ERROR)
+      return
+    end
+
     local process = require('continue.process')
     local client = require('continue.client')
     local status = process.status()
-
-    if not status.running then
-      vim.notify('Continue server not running', vim.log.levels.WARN)
-      return
-    end
 
     client.pause(status.port)
   end, { desc = 'Pause Continue agent execution' })
@@ -76,14 +74,14 @@ function M.setup(user_config, dependency_checker)
 
   -- :ContinueDiff - Show git diff
   vim.api.nvim_create_user_command('ContinueDiff', function()
+    if not ensure_started() then
+      vim.notify('Failed to start Continue server', vim.log.levels.ERROR)
+      return
+    end
+
     local process = require('continue.process')
     local client = require('continue.client')
     local status = process.status()
-
-    if not status.running then
-      vim.notify('Continue server not running', vim.log.levels.WARN)
-      return
-    end
 
     client.get_diff(status.port, function(err, diff)
       if err then
@@ -176,6 +174,11 @@ function M.setup(user_config, dependency_checker)
 
   -- :ContinueExport - Export chat to markdown
   vim.api.nvim_create_user_command('ContinueExport', function(opts)
+    if not ensure_started() then
+      vim.notify('Failed to start Continue server', vim.log.levels.ERROR)
+      return
+    end
+
     local client = require('continue.client')
     local export = require('continue.export')
     local status = client.status()
@@ -188,11 +191,6 @@ function M.setup(user_config, dependency_checker)
     -- Get chat history from client state
     local process = require('continue.process')
     local proc_status = process.status()
-    
-    if not proc_status.running then
-      vim.notify('Server not running - no history available', vim.log.levels.WARN)
-      return
-    end
     
     -- Fetch current state to export
     local http = require('continue.utils.http')

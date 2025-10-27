@@ -75,7 +75,7 @@ require("lazy").setup({
     dir = vim.fn.expand('~/path/to/continue.nvim'),
     config = function()
       require('continue').setup({
-        auto_start = true,  -- Start cn serve automatically
+        -- Server starts lazily on first command use
       })
     end,
   },
@@ -249,7 +249,7 @@ require('continue').setup({
   port = 8000,              -- Default port
   port_range = { 8000, 8010 }, -- Port scan range
   timeout = 300,            -- Server timeout (seconds)
-  auto_start = true,        -- Auto-start on load
+  auto_start = false,       -- DEPRECATED: server starts lazily on first command
   auto_find_port = true,    -- Auto-find available port
   cn_bin = 'cn',            -- Path to cn binary
   continue_config = nil,    -- Custom config path

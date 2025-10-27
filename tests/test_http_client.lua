@@ -26,19 +26,49 @@ TEST COVERAGE:
 local test_port = 8000
 local test_url = 'http://localhost:' .. test_port
 
--- ANSI colors for output
+-- \ANSI color for output
 local colors = {
-  reset = '\27[0m',
-  green = '\27[32m',
-  red = '\27[31m',
-  yellow = '\27[33m',
-  blue = '\27[34m',
-  dim = '\27[2m',
+  -- reset
+  reset     = 0,
+
+  -- misc
+  bright    = 1,
+  dim       = 2,
+  underline = 4,
+  blink     = 5,
+  reverse   = 7,
+  hidden    = 8,
+
+  -- foreground colors
+  black     = 30,
+  red       = 31,
+  green     = 32,
+  yellow    = 33,
+  blue      = 34,
+  magenta   = 35,
+  cyan      = 36,
+  white     = 37,
+
+  -- background colors
+  blackbg   = 40,
+  redbg     = 41,
+  greenbg   = 42,
+  yellowbg  = 43,
+  bluebg    = 44,
+  magentabg = 45,
+  cyanbg    = 46,
+  whitebg   = 47
 }
 
+local escapeString = string.char(27) .. '[%dm'
+local function escapeNumber(number)
+  return escapeString:format(number)
+end
+
 local function log(msg, color)
-  color = color or colors.reset
-  print(color .. msg .. colors.reset)
+  local reset = escapeNumber(colors.reset)
+  color = escapeNumber(color) or escapeNumber(colors.reset)
+  io.write(color .. msg .. reset .. "\n")
 end
 
 local function log_success(msg)
@@ -324,9 +354,9 @@ local success_rate = math.floor((tests_passed / tests_run) * 100)
 log_info(string.format('Success rate: %d%%', success_rate))
 
 if tests_failed == 0 then
-  log('\n' .. colors.green .. '🎉 All tests passed!' .. colors.reset)
+  log('\n' .. '🎉 All tests passed!', colors.green)
 else
-  log('\n' .. colors.red .. '❌ Some tests failed' .. colors.reset)
+  log('\n' .. '❌ Some tests failed', colors.red)
 end
 
 -- NEXT STEPS for test expansion:
