@@ -81,6 +81,17 @@ function M.open()
   local continue = require('continue')
   state.config = continue.config
   
+  -- Ensure polling is started if server is running
+  local process = require('continue.process')
+  local client = require('continue.client')
+  local process_status = process.status()
+  local client_status = client.status()
+  
+  if process_status.running and not client_status.polling then
+    vim.notify('Starting polling for Continue server...', vim.log.levels.INFO)
+    client.start_polling(process_status.port)
+  end
+  
   -- Create chat history buffer if it doesn't exist
   if not state.bufnr or not vim.api.nvim_buf_is_valid(state.bufnr) then
     state.bufnr = vim.api.nvim_create_buf(false, true)

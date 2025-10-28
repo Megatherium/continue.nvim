@@ -160,10 +160,8 @@ function M.start(config, retry_count)
 			M.stop()
 		else
 			vim.notify("Continue server ready on port " .. port, vim.log.levels.INFO)
-			-- Start polling if auto_start is enabled
-			if config.auto_start then
-				require("continue.client").start_polling(port)
-			end
+			-- Always start polling when server is ready
+			require("continue.client").start_polling(port)
 		end
 	end)
 
