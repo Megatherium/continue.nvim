@@ -11,6 +11,14 @@ M.config = {
   auto_find_port = true,
   cn_bin = 'cn', -- path to cn binary
   continue_config = nil, -- path to Continue config (optional)
+  
+  -- Terminal window configuration
+  terminal = {
+    position = 'float',  -- 'float', 'left', 'right', 'top', 'bottom'
+    hsize = 80,          -- horizontal size (% for left/right/float)
+    vsize = 80,          -- vertical size (% for top/bottom/float)
+    transparency = 0,    -- transparency (0-100, only for float)
+  },
 }
 
 -- Check if dependencies are installed

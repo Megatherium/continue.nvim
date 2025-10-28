@@ -9,10 +9,78 @@ local state = {
   input_winnr = nil,    -- Input window (new)
   last_state = nil,
   last_permission = nil,
+  config = nil,         -- Store terminal config
+  original_cmdheight = nil,  -- Store original cmdheight to restore on close
 }
+
+-- Calculate window dimensions based on config
+-- @param config table - Terminal configuration
+-- @return table - Window configuration for nvim_open_win
+local function calculate_window_config(config, is_input)
+  local term_config = config.terminal or {}
+  local position = term_config.position or 'float'
+  local hsize = term_config.hsize or 80
+  local vsize = term_config.vsize or 80
+  local transparency = term_config.transparency or 0
+  
+  local win_config = {
+    style = 'minimal',
+    border = 'rounded',
+  }
+  
+  -- Calculate sizes
+  local width = math.floor(vim.o.columns * (hsize / 100))
+  local height = math.floor(vim.o.lines * (vsize / 100))
+  
+  -- selene: allow(if_same_then_else)
+  if position == 'float' then
+    -- Floating window (centered)
+    local chat_height = is_input and math.floor(height * 0.2) or math.floor(height * 0.8)
+    local row = math.floor((vim.o.lines - height) / 2)
+    local col = math.floor((vim.o.columns - width) / 2)
+    
+    win_config.relative = 'editor'
+    win_config.width = width
+    win_config.height = is_input and (height - chat_height - 1) or chat_height
+    win_config.row = is_input and (row + chat_height + 1) or row
+    win_config.col = col
+    
+    -- Add transparency for floating windows
+    if transparency > 0 and vim.fn.has('nvim-0.9') == 1 then
+      win_config.blend = transparency
+    end
+    
+  elseif position == 'left' then
+    -- Left split
+    win_config = nil  -- Use vim.cmd for splits
+    
+  elseif position == 'right' then
+    -- Right split
+    win_config = nil
+    
+  elseif position == 'top' then
+    -- Top split
+    win_config = nil
+    
+  elseif position == 'bottom' then
+    -- Bottom split
+    win_config = nil
+  end
+  
+  return win_config, width, height
+end
 
 -- Open chat window
 function M.open()
+  -- Save original cmdheight to restore later
+  if not state.original_cmdheight then
+    state.original_cmdheight = vim.o.cmdheight
+  end
+  
+  -- Get config from main module
+  local continue = require('continue')
+  state.config = continue.config
+  
   -- Create chat history buffer if it doesn't exist
   if not state.bufnr or not vim.api.nvim_buf_is_valid(state.bufnr) then
     state.bufnr = vim.api.nvim_create_buf(false, true)
@@ -35,40 +103,75 @@ function M.open()
     M.setup_input_keymaps(state.input_bufnr)
   end
 
-  -- Calculate window dimensions (80% of screen)
-  local width = math.floor(vim.o.columns * 0.8)
-  local height = math.floor(vim.o.lines * 0.8)
-  local row = math.floor((vim.o.lines - height) / 2)
-  local col = math.floor((vim.o.columns - width) / 2)
+  local term_config = state.config.terminal or {}
+  local position = term_config.position or 'float'
   
-  -- Split: 80% chat history, 20% input
-  local chat_height = math.floor(height * 0.8)
-  local input_height = height - chat_height - 1  -- -1 for border
+  if position == 'float' then
+    -- Floating window mode
+    local win_config_chat = calculate_window_config(state.config, false)
+    local win_config_input = calculate_window_config(state.config, true)
+    
+    -- Open chat history window (top)
+    state.winnr = vim.api.nvim_open_win(state.bufnr, true, win_config_chat)
+    
+    -- Set up chat window keymaps
+    M.setup_keymaps(state.bufnr)
 
-  -- Open chat history window (top)
-  state.winnr = vim.api.nvim_open_win(state.bufnr, true, {
-    relative = 'editor',
-    width = width,
-    height = chat_height,
-    row = row,
-    col = col,
-    style = 'minimal',
-    border = 'rounded',
-  })
-  
-  -- Set up chat window keymaps
-  M.setup_keymaps(state.bufnr)
-
-  -- Open input window (bottom)
-  state.input_winnr = vim.api.nvim_open_win(state.input_bufnr, true, {
-    relative = 'editor',
-    width = width,
-    height = input_height,
-    row = row + chat_height + 1,  -- +1 for border
-    col = col,
-    style = 'minimal',
-    border = 'rounded',
-  })
+    -- Open input window (bottom)
+    state.input_winnr = vim.api.nvim_open_win(state.input_bufnr, true, win_config_input)
+    
+  else
+    -- Split window modes (left, right, top, bottom)
+    local hsize = term_config.hsize or 80
+    local vsize = term_config.vsize or 80
+    
+    -- selene: allow(if_same_then_else)
+    if position == 'left' then
+      vim.cmd('topleft vsplit')
+      local width = math.floor(vim.o.columns * (hsize / 100))
+      vim.cmd('vertical resize ' .. width)
+    elseif position == 'right' then
+      vim.cmd('botright vsplit')
+      local width = math.floor(vim.o.columns * (hsize / 100))
+      vim.cmd('vertical resize ' .. width)
+    elseif position == 'top' then
+      vim.cmd('topleft split')
+      local height = math.floor(vim.o.lines * (vsize / 100))
+      vim.cmd('resize ' .. height)
+    elseif position == 'bottom' then
+      vim.cmd('botright split')
+      local height = math.floor(vim.o.lines * (vsize / 100))
+      vim.cmd('resize ' .. height)
+    end
+    
+    -- Set chat buffer in the first split
+    vim.api.nvim_win_set_buf(0, state.bufnr)
+    state.winnr = vim.api.nvim_get_current_win()
+    M.setup_keymaps(state.bufnr)
+    
+    -- Calculate heights for chat and input areas
+    local total_height
+    if position == 'top' or position == 'bottom' then
+      total_height = math.floor(vim.o.lines * (vsize / 100))
+    else
+      total_height = vim.api.nvim_win_get_height(0)
+    end
+    local input_height = math.max(3, math.floor(total_height * 0.2))
+    local chat_height = total_height - input_height - 1
+    
+    -- Resize chat window to leave room for input
+    vim.api.nvim_win_set_height(state.winnr, chat_height)
+    
+    -- Create input window below chat window
+    vim.cmd('split')
+    vim.cmd('wincmd j')  -- Move to the new split below
+    vim.api.nvim_win_set_buf(0, state.input_bufnr)
+    state.input_winnr = vim.api.nvim_get_current_win()
+    vim.cmd('resize ' .. input_height)
+    
+    -- Setup input keymaps
+    M.setup_input_keymaps(state.input_bufnr)
+  end
   
   -- Add input prompt
   vim.api.nvim_buf_set_lines(state.input_bufnr, 0, -1, false, {
@@ -77,6 +180,11 @@ function M.open()
   
   -- Move cursor to input window
   vim.api.nvim_set_current_win(state.input_winnr)
+
+  -- Restore cmdheight after all window operations
+  if state.original_cmdheight then
+    vim.o.cmdheight = state.original_cmdheight
+  end
 
   -- Render existing chat history if available
   if state.last_state and state.last_state.chatHistory then
@@ -100,7 +208,7 @@ function M.open()
       '    Ready to assist! Start typing below to send a message.',
       '',
       '    ⌨️  Keyboard Shortcuts:',
-      '       • Press ? for full help',
+      '       • Press g? for full help',
       '       • Press yy to copy message',
       '       • Press q or <Esc> to close',
       '',
@@ -127,6 +235,14 @@ end
 
 -- Close chat window
 function M.close()
+  local command_preview = require('continue.ui.command_preview')
+  local file_picker = require('continue.ui.file_picker')
+  
+  -- Hide command preview and file picker if showing
+  command_preview.hide()
+  file_picker.hide()
+  file_picker.clear_attached()
+  
   if state.winnr and vim.api.nvim_win_is_valid(state.winnr) then
     vim.api.nvim_win_close(state.winnr, true)
     state.winnr = nil
@@ -136,20 +252,68 @@ function M.close()
     vim.api.nvim_win_close(state.input_winnr, true)
     state.input_winnr = nil
   end
+
+  -- Restore cmdheight after all window operations
+  if state.original_cmdheight then
+    vim.o.cmdheight = state.original_cmdheight
+  end
+end
+
+-- Toggle chat window (open if closed, close if open)
+function M.toggle()
+  if state.winnr and vim.api.nvim_win_is_valid(state.winnr) then
+    -- Window is open, close it
+    M.close()
+  else
+    -- Window is closed, open it
+    M.open()
+  end
+end
+
+-- Focus chat window (open if closed, focus if open)
+function M.focus()
+  if state.winnr and vim.api.nvim_win_is_valid(state.winnr) then
+    -- Window is open, just focus it
+    vim.api.nvim_set_current_win(state.winnr)
+  else
+    -- Window is closed, open it (which focuses by default)
+    M.open()
+  end
 end
 
 -- Setup buffer-local keymaps
 -- @param bufnr number - Buffer number
 function M.setup_keymaps(bufnr)
-  -- Close on q
-  vim.keymap.set('n', 'q', function()
-    M.close()
-  end, { buffer = bufnr, desc = 'Close Continue chat' })
-
-  -- Close on <Esc>
-  vim.keymap.set('n', '<Esc>', function()
-    M.close()
-  end, { buffer = bufnr, desc = 'Close Continue chat' })
+  local help_overlay = require('continue.ui.help_overlay')
+  local search = require('continue.ui.search')
+  local code_extractor = require('continue.utils.code_extractor')
+  
+  -- NOTE: q and <Esc> removed - use :ContinueToggle instead (like other terminal plugins)
+  
+  -- Show help overlay
+  vim.keymap.set('n', 'g?', function()
+    help_overlay.show()
+  end, { buffer = bufnr, desc = 'Show keyboard shortcuts help' })
+  
+  -- Search in chat history
+  vim.keymap.set('n', '/', function()
+    search.start_search(bufnr, true)
+  end, { buffer = bufnr, desc = 'Search in chat history' })
+  
+  -- Next search match
+  vim.keymap.set('n', 'n', function()
+    search.next_match(bufnr)
+  end, { buffer = bufnr, desc = 'Jump to next search match' })
+  
+  -- Previous search match
+  vim.keymap.set('n', 'N', function()
+    search.prev_match(bufnr)
+  end, { buffer = bufnr, desc = 'Jump to previous search match' })
+  
+  -- Clear search highlights
+  vim.keymap.set('n', '<C-l>', function()
+    search.clear_search(bufnr)
+  end, { buffer = bufnr, desc = 'Clear search highlights' })
   
   -- Copy current message to clipboard (yank)
   vim.keymap.set('n', 'yy', function()
@@ -161,15 +325,208 @@ function M.setup_keymaps(bufnr)
     M.copy_all_messages()
   end, { buffer = bufnr, desc = 'Copy all messages' })
   
-  -- Show help
-  vim.keymap.set('n', '?', function()
+  -- Show help (changed from ? to g? to avoid conflict with vim search)
+  vim.keymap.set('n', 'g?', function()
     M.show_help()
   end, { buffer = bufnr, desc = 'Show keyboard shortcuts' })
+  
+  -- Resize keybindings
+  vim.keymap.set('n', '<C-w>+', function()
+    M.resize_window('height', 5)
+  end, { buffer = bufnr, desc = 'Increase window height' })
+  
+  vim.keymap.set('n', '<C-w>-', function()
+    M.resize_window('height', -5)
+  end, { buffer = bufnr, desc = 'Decrease window height' })
+  
+  vim.keymap.set('n', '<C-w>>', function()
+    M.resize_window('width', 5)
+  end, { buffer = bufnr, desc = 'Increase window width' })
+  
+  vim.keymap.set('n', '<C-w><', function()
+    M.resize_window('width', -5)
+  end, { buffer = bufnr, desc = 'Decrease window width' })
+  
+  vim.keymap.set('n', '<C-w>=', function()
+    M.reset_window_size()
+  end, { buffer = bufnr, desc = 'Reset window size to default' })
+  
+  -- Code block operations
+  -- Yank code block under cursor
+  vim.keymap.set('n', 'yc', function()
+    local cursor = vim.api.nvim_win_get_cursor(0)
+    local block = code_extractor.get_code_block_at_cursor(bufnr, cursor[1])
+    if block then
+      code_extractor.copy_block_to_clipboard(block)
+    else
+      vim.notify('No code block at cursor', vim.log.levels.WARN)
+    end
+  end, { buffer = bufnr, desc = 'Yank code block at cursor' })
+  
+  -- Jump to next code block
+  vim.keymap.set('n', ']c', function()
+    local cursor = vim.api.nvim_win_get_cursor(0)
+    local block = code_extractor.get_next_code_block(bufnr, cursor[1])
+    if block then
+      vim.api.nvim_win_set_cursor(0, { block.start_line, 0 })
+      vim.notify(string.format('Jumped to %s code block', block.language), vim.log.levels.INFO)
+    else
+      vim.notify('No more code blocks', vim.log.levels.WARN)
+    end
+  end, { buffer = bufnr, desc = 'Jump to next code block' })
+  
+  -- Jump to previous code block
+  vim.keymap.set('n', '[c', function()
+    local cursor = vim.api.nvim_win_get_cursor(0)
+    local block = code_extractor.get_prev_code_block(bufnr, cursor[1])
+    if block then
+      vim.api.nvim_win_set_cursor(0, { block.start_line, 0 })
+      vim.notify(string.format('Jumped to %s code block', block.language), vim.log.levels.INFO)
+    else
+      vim.notify('No previous code blocks', vim.log.levels.WARN)
+    end
+  end, { buffer = bufnr, desc = 'Jump to previous code block' })
+  
+  -- Execute code block (Lua, Vim, Bash, Python only)
+  vim.keymap.set('n', '<leader>ce', function()
+    local cursor = vim.api.nvim_win_get_cursor(0)
+    local block = code_extractor.get_code_block_at_cursor(bufnr, cursor[1])
+    if block then
+      code_extractor.execute_block(block)
+    else
+      vim.notify('No code block at cursor', vim.log.levels.WARN)
+    end
+  end, { buffer = bufnr, desc = 'Execute code block at cursor' })
+  
+  -- Write code block to file
+  vim.keymap.set('n', '<leader>cw', function()
+    local cursor = vim.api.nvim_win_get_cursor(0)
+    local block = code_extractor.get_code_block_at_cursor(bufnr, cursor[1])
+    if block then
+      code_extractor.write_block_to_file(block)
+    else
+      vim.notify('No code block at cursor', vim.log.levels.WARN)
+    end
+  end, { buffer = bufnr, desc = 'Write code block to file' })
 end
 
 -- Setup input buffer keymaps
 -- @param bufnr number - Input buffer number
 function M.setup_input_keymaps(bufnr)
+  local command_preview = require('continue.ui.command_preview')
+  local file_picker = require('continue.ui.file_picker')
+  local help_overlay = require('continue.ui.help_overlay')
+  
+  -- Disable default completion in this buffer (prevents filesystem completion on /)
+  vim.api.nvim_buf_set_option(bufnr, 'completefunc', '')
+  vim.api.nvim_buf_set_option(bufnr, 'omnifunc', '')
+  
+  -- Auto-clear placeholder text on first insert
+  local placeholder_cleared = false
+  
+  -- Auto-clear on insert mode entry
+  vim.api.nvim_create_autocmd('InsertEnter', {
+    buffer = bufnr,
+    callback = function()
+      if not placeholder_cleared then
+        local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+        -- Check if it's the placeholder text
+        if #lines == 1 and lines[1]:match('^> Type your message') then
+          vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, {''})
+          placeholder_cleared = true
+        end
+      end
+    end,
+  })
+  
+  -- Show help overlay (accessible from input window too)
+  vim.keymap.set('n', 'g?', function()
+    help_overlay.show()
+  end, { buffer = bufnr, desc = 'Show keyboard shortcuts help' })
+  
+  -- Command preview and file picker: detect / and @ triggers
+  vim.api.nvim_create_autocmd({ 'TextChangedI', 'TextChanged' }, {
+    buffer = bufnr,
+    callback = function()
+      local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+      local current_line = lines[1] or ''
+      
+      -- Check for slash command
+      if vim.startswith(current_line, '/') and not current_line:match('^>') then
+        local filter = current_line:match('^/(%S*)')
+        local winnr = vim.fn.bufwinid(bufnr)
+        
+        if winnr ~= -1 then
+          command_preview.show(winnr, filter or '')
+          file_picker.hide() -- Hide file picker if showing
+        end
+      -- Check for @ file mention
+      elseif current_line:match('@[^%s]*$') then
+        local filter = current_line:match('@([^%s]*)$')
+        local winnr = vim.fn.bufwinid(bufnr)
+        
+        if winnr ~= -1 then
+          file_picker.show(winnr, filter or '')
+          command_preview.hide() -- Hide command preview if showing
+        end
+      else
+        command_preview.hide()
+        file_picker.hide()
+      end
+    end,
+  })
+  
+  -- Navigate preview/picker with Up/Down - handle both
+  vim.keymap.set('i', '<Up>', function()
+    if command_preview.is_visible() then
+      command_preview.navigate_up()
+      return ''
+    elseif file_picker.is_visible() then
+      file_picker.navigate_up()
+      return ''
+    else
+      return '<Up>'
+    end
+  end, { buffer = bufnr, expr = true, desc = 'Navigate up' })
+  
+  vim.keymap.set('i', '<Down>', function()
+    if command_preview.is_visible() then
+      command_preview.navigate_down()
+      return ''
+    elseif file_picker.is_visible() then
+      file_picker.navigate_down()
+      return ''
+    else
+      return '<Down>'
+    end
+  end, { buffer = bufnr, expr = true, desc = 'Navigate down' })
+  
+  -- Tab to complete/attach
+  vim.keymap.set('i', '<Tab>', function()
+    if command_preview.is_visible() then
+      command_preview.complete_selected(bufnr)
+      return ''
+    elseif file_picker.is_visible() then
+      file_picker.toggle_selected()
+      return ''
+    else
+      return '<Tab>'
+    end
+  end, { buffer = bufnr, expr = true, desc = 'Complete/attach' })
+  
+  -- Esc to hide preview/picker
+  vim.keymap.set('i', '<Esc>', function()
+    if command_preview.is_visible() then
+      command_preview.hide()
+      return ''
+    elseif file_picker.is_visible() then
+      file_picker.hide()
+      return ''
+    else
+      return '<Esc>'
+    end
+  end, { buffer = bufnr, expr = true, desc = 'Hide preview' })
+  
   -- Send message on <CR> in insert mode
   vim.keymap.set('i', '<CR>', function()
     M.send_input_message()
@@ -189,6 +546,21 @@ function M.setup_input_keymaps(bufnr)
   vim.keymap.set('n', 'q', function()
     M.close()
   end, { buffer = bufnr, desc = 'Close Continue chat' })
+end
+
+-- Clear chat history
+function M.clear_history()
+  if not state.bufnr or not vim.api.nvim_buf_is_valid(state.bufnr) then
+    return
+  end
+  
+  -- Clear buffer
+  vim.api.nvim_buf_set_option(state.bufnr, 'modifiable', true)
+  vim.api.nvim_buf_set_lines(state.bufnr, 0, -1, false, { 'Chat history cleared.' })
+  vim.api.nvim_buf_set_option(state.bufnr, 'modifiable', false)
+  
+  -- Reset state
+  state.last_state = nil
 end
 
 -- Send message from input buffer
@@ -215,6 +587,19 @@ function M.send_input_message()
     return
   end
   
+  -- Check if this is a slash command that can be handled locally
+  local slash_handlers = require('continue.slash_handlers')
+  if vim.startswith(message, '/') then
+    local handled = slash_handlers.handle(message, M)
+    if handled then
+      -- Clear input buffer
+      vim.api.nvim_buf_set_lines(state.input_bufnr, 0, -1, false, {
+        '> Type your message and press <CR> to send...',
+      })
+      return -- Don't send to server
+    end
+  end
+
   -- Get port from process status
   local process = require('continue.process')
   local status = process.status()
@@ -613,7 +998,6 @@ function M.copy_current_message()
   end
   
   local cursor_line = vim.api.nvim_win_get_cursor(0)[1]
-  local all_lines = vim.api.nvim_buf_get_lines(state.bufnr, 0, -1, false)
   
   -- Find which message the cursor is in
   local current_line = 1
@@ -674,13 +1058,20 @@ function M.show_help()
     '  q or <Esc>  - Close chat window',
     '  yy          - Copy current message to clipboard',
     '  yA          - Copy all messages to clipboard',
-    '  ?           - Show this help',
+    '  g?          - Show this help',
     '',
     'INPUT AREA (bottom pane):',
     '  i or a      - Enter insert mode to type',
     '  <CR>        - Send message (insert or normal mode)',
     '  <Esc>       - Exit insert mode / close window',
     '  q           - Close window (normal mode)',
+    '',
+    'WINDOW RESIZING:',
+    '  <C-w>+      - Increase window height',
+    '  <C-w>-      - Decrease window height',
+    '  <C-w>>      - Increase window width',
+    '  <C-w><      - Decrease window width',
+    '  <C-w>=      - Reset to default size',
     '',
     'COMMANDS:',
     '  :Continue [msg]   - Open chat or send message',
@@ -731,6 +1122,80 @@ function M.show_help()
   vim.keymap.set('n', '<Esc>', function()
     vim.api.nvim_win_close(win, true)
   end, { buffer = buf })
+end
+
+-- Resize window dynamically
+-- @param dimension string - 'height' or 'width'
+-- @param amount number - Amount to resize (positive or negative)
+function M.resize_window(dimension, amount)
+  if not state.winnr or not vim.api.nvim_win_is_valid(state.winnr) then
+    vim.notify('Chat window not open', vim.log.levels.WARN)
+    return
+  end
+  
+  local term_config = state.config and state.config.terminal or {}
+  local position = term_config.position or 'float'
+  
+  if position == 'float' then
+    -- For floating windows, update win config
+    local current_config = vim.api.nvim_win_get_config(state.winnr)
+    
+    if dimension == 'height' then
+      local new_height = current_config.height + amount
+      if new_height > 5 and new_height < vim.o.lines - 5 then
+        vim.api.nvim_win_set_height(state.winnr, new_height)
+        -- Also adjust input window position
+        if state.input_winnr and vim.api.nvim_win_is_valid(state.input_winnr) then
+          local input_config = vim.api.nvim_win_get_config(state.input_winnr)
+          input_config.row = current_config.row + new_height + 1
+          vim.api.nvim_win_set_config(state.input_winnr, input_config)
+        end
+      end
+    elseif dimension == 'width' then
+      local new_width = current_config.width + amount
+      if new_width > 10 and new_width < vim.o.columns - 10 then
+        vim.api.nvim_win_set_width(state.winnr, new_width)
+        -- Also adjust input window
+        if state.input_winnr and vim.api.nvim_win_is_valid(state.input_winnr) then
+          vim.api.nvim_win_set_width(state.input_winnr, new_width)
+        end
+      end
+    end
+  else
+    -- For split windows, use vim commands
+    local current_win = vim.api.nvim_get_current_win()
+    vim.api.nvim_set_current_win(state.winnr)
+    
+    if dimension == 'height' then
+      if amount > 0 then
+        vim.cmd('resize +' .. amount)
+      else
+        vim.cmd('resize ' .. amount)
+      end
+    elseif dimension == 'width' then
+      if amount > 0 then
+        vim.cmd('vertical resize +' .. amount)
+      else
+        vim.cmd('vertical resize ' .. amount)
+      end
+    end
+    
+    vim.api.nvim_set_current_win(current_win)
+  end
+end
+
+-- Reset window size to configured defaults
+function M.reset_window_size()
+  if not state.winnr or not vim.api.nvim_win_is_valid(state.winnr) then
+    vim.notify('Chat window not open', vim.log.levels.WARN)
+    return
+  end
+  
+  -- Close and reopen to reset
+  M.close()
+  vim.defer_fn(function()
+    M.open()
+  end, 10)
 end
 
 -- IMPLEMENTATION SUBSTEPS for future enhancements:

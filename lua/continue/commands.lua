@@ -212,9 +212,9 @@ function M.setup(user_config, dependency_checker, lazy_start_fn)
         filepath = opts.args
       else
         -- Auto-generate filename
-        local auto_path, err = export.auto_export(server_state.chatHistory)
+        local auto_path, auto_err = export.auto_export(server_state.chatHistory)
         if not auto_path then
-          vim.notify('Export failed: ' .. (err or 'unknown error'), vim.log.levels.ERROR)
+          vim.notify('Export failed: ' .. (auto_err or 'unknown error'), vim.log.levels.ERROR)
           return
         end
         filepath = auto_path
@@ -245,7 +245,35 @@ function M.setup(user_config, dependency_checker, lazy_start_fn)
     complete = 'file'
   })
 
-  -- TODO: :ContinueLog - Show logs (if we add logging to file)
+  -- :ContinueToggle - Toggle chat window (like toggleterm)
+  vim.api.nvim_create_user_command('ContinueToggle', function()
+    if not ensure_deps() then
+      return
+    end
+
+    -- Lazy start server on first use
+    if not ensure_started() then
+      vim.notify('Failed to start Continue server', vim.log.levels.ERROR)
+      return
+    end
+
+    require('continue.ui.chat').toggle()
+  end, { desc = 'Toggle Continue chat window' })
+
+  -- :ContinueFocus - Focus chat window (open if closed, focus if already open)
+  vim.api.nvim_create_user_command('ContinueFocus', function()
+    if not ensure_deps() then
+      return
+    end
+
+    -- Lazy start server on first use
+    if not ensure_started() then
+      vim.notify('Failed to start Continue server', vim.log.levels.ERROR)
+      return
+    end
+
+    require('continue.ui.chat').focus()
+  end, { desc = 'Focus Continue chat window' })
 end
 
 return M

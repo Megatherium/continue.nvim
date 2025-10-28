@@ -16,9 +16,9 @@ Instead of porting the entire Continue codebase (40-70K tokens of TypeScript), c
 
 ## Features
 
-### Implemented ✅
+### Core Features ✅
 
-**Core Features:**
+**HTTP Client & Infrastructure:**
 - [x] **HTTP Client** - curl-based async requests with timeout handling
 - [x] **Process Manager** - Auto-start/stop `cn serve` with port scanning
 - [x] **State Polling** - Dynamic intervals (100ms active, 1s idle)
@@ -35,6 +35,52 @@ Instead of porting the entire Continue codebase (40-70K tokens of TypeScript), c
 - [x] **Processing Indicator** - Real-time status (⏳/📥/✅) in header
 - [x] **Request Retry** - Auto-retry transient failures (2x max)
 - [x] **Welcome Screen** - Beautiful ASCII art and quick start
+- [x] **Export to Markdown** - :ContinueExport command
+
+### Advanced Features ✨ (New!)
+
+**Autocomplete Systems:**
+- [x] **Slash Command Autocomplete** - Fuzzy-finding preview for /commands
+  - Real-time filtering as you type
+  - Keyboard navigation (↑/↓, Tab)
+  - 16 system commands + custom commands support
+  - Visual indicators (⚙ system, 🤖 custom)
+  
+- [x] **File Attachment Picker** - Git-aware fuzzy finder for @mentions
+  - Fuzzy matching on filenames and paths
+  - Multi-select support (attach multiple files)
+  - Keyboard navigation (↑/↓, Tab)
+  - Visual indicators for attached files
+
+**Search & Navigation:**
+- [x] **Vim-Style Search** - Search chat history with /, n, N
+  - Real-time search with match highlighting
+  - Jump between matches (n/N)
+  - Match counter (e.g., "Match 3 of 12")
+  - Clear highlights with <C-l>
+
+- [x] **Code Block Navigation** - Jump between code blocks
+  - ]c / [c to navigate blocks
+  - Language detection from fences
+
+**Code Operations:**
+- [x] **Code Block Extraction** - One-key operations on code blocks
+  - yc to yank (copy) code block at cursor
+  - ]c / [c to jump between blocks
+  - <leader>ce to execute (Lua, Vim, Bash, Python)
+  - <leader>cw to write block to file
+
+**Enhanced UI:**
+- [x] **Help Overlay** - Comprehensive keyboard reference (g?)
+  - Full-screen help with all keybindings
+  - Syntax-highlighted sections
+  - Tips & tricks
+  - Architecture overview
+
+- [x] **Local Command Handlers** - Instant execution of common commands
+  - /clear - Clear history (with confirmation)
+  - /help - Show help overlay
+  - /exit - Close chat window
 
 **Commands:**
 - [x] `:Continue [msg]` - Open chat or send message
@@ -47,11 +93,11 @@ Instead of porting the entire Continue codebase (40-70K tokens of TypeScript), c
 
 ### Future Enhancements 📋
 
-- [ ] vim.loop TCP client (zero curl dependency)
+- [ ] Treesitter integration (enhanced syntax highlighting)
 - [ ] Session persistence (save/restore across restarts)
-- [ ] Message search (/ to search history)
-- [ ] Treesitter integration (perfect syntax highlighting)
-- [ ] Code actions (extract to file, run inline)
+- [ ] Visual mode operations (send selection)
+- [ ] Mode indicators (normal/plan/auto from CLI)
+- [ ] Custom command loading from server
 
 ## Installation
 
@@ -119,8 +165,24 @@ require('continue').setup({
   auto_find_port = true,    -- Automatically find available port
   cn_bin = 'cn',            -- Path to cn CLI binary
   continue_config = nil,    -- Custom Continue config path (optional)
+  
+  -- Terminal window configuration
+  terminal = {
+    position = 'float',    -- 'float', 'left', 'right', 'top', 'bottom'
+    hsize = 80,            -- Horizontal size in % (for float/left/right)
+    vsize = 80,            -- Vertical size in % (for float/top/bottom)
+    transparency = 0,      -- Transparency 0-100 (only for float, requires nvim 0.9+)
+  },
 })
 ```
+
+### Terminal Window Positions
+
+- **`float`** (default): Centered floating window with configurable transparency
+- **`left`**: Vertical split on the left side
+- **`right`**: Vertical split on the right side
+- **`top`**: Horizontal split at the top
+- **`bottom`**: Horizontal split at the bottom
 
 **Note**: AI provider configuration (API keys, models) is handled by Continue CLI, not this plugin. Configure via `~/.continue/config.json` or environment variables. See [Continue docs](https://docs.continue.dev).
 
@@ -156,6 +218,47 @@ require('continue').setup({
 | Key | Action |
 |-----|--------|
 | `q` or `<Esc>` | Close chat window |
+| `g?` | Show comprehensive help overlay |
+| `yy` | Copy current message to clipboard |
+| `yA` | Copy all messages to clipboard |
+| `/` | Search in chat history (vim-style) |
+| `n` | Jump to next search match |
+| `N` | Jump to previous search match |
+| `<C-l>` | Clear search highlights |
+
+**Code Block Operations:**
+
+| Key | Action |
+|-----|--------|
+| `yc` | Yank (copy) code block at cursor |
+| `]c` | Jump to next code block |
+| `[c` | Jump to previous code block |
+| `<leader>ce` | Execute code block (Lua/Vim/Bash/Python) |
+| `<leader>cw` | Write code block to file |
+
+**Input Area:**
+
+| Key | Action |
+|-----|--------|
+| `i` or `a` | Start typing (insert mode) |
+| `<CR>` | Send message |
+| `/command` | Trigger slash command autocomplete |
+| `@filename` | Trigger file picker autocomplete |
+| `↑` / `↓` | Navigate autocomplete suggestions |
+| `Tab` | Complete/select suggestion |
+| `<Esc>` | Cancel/hide suggestions |
+
+**Window Resizing:**
+
+| Key | Action |
+|-----|--------|
+| `<C-w>+` | Increase window height |
+| `<C-w>-` | Decrease window height |
+| `<C-w>>` | Increase window width |
+| `<C-w><` | Decrease window width |
+| `<C-w>=` | Reset window to default size |
+
+**Note**: Resize keybindings work in both floating and split window modes.
 
 ## Testing
 
